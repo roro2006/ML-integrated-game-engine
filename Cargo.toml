@@ -1,0 +1,53 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+# Engine crates (dependency direction is enforced by these paths; see
+# docs/adr/0002-workspace-and-crate-layout.md).
+ai_gateway = { path = "crates/ai_gateway" }
+content_runtime = { path = "crates/content_runtime" }
+debug_tools = { path = "crates/debug_tools" }
+engine = { path = "crates/engine" }
+game_core = { path = "crates/game_core" }
+game_runtime = { path = "crates/game_runtime" }
+narrative = { path = "crates/narrative" }
+platform = { path = "crates/platform" }
+procedural_gen = { path = "crates/procedural_gen" }
+renderer = { path = "crates/renderer" }
+
+# Third-party plumbing. Pinned exactly; each is confined to one crate behind an
+# engine-owned interface.
+blake3 = "=1.8.7"
+glam = "=0.33.7"
+ron = "=0.12.2"
+serde = { version = "=1.0.229", features = ["derive"] }
+wgpu = "=30.0.1"
+winit = "=0.30.13"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+print_stdout = "warn"
+todo = "warn"
+unwrap_used = "warn"
+expect_used = "warn"
+
+[profile.dev]
+# Dependencies are optimized so debug builds of the game stay playable on
+# low-end hardware while engine crates remain debuggable.
+opt-level = 0
+
+[profile.dev.package."*"]
+opt-level = 2

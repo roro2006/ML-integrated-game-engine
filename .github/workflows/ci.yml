@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  check:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml pins the toolchain; rustup installs it on first use.
+      - name: Show toolchain
+        run: |
+          rustc --version
+          cargo --version
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      # The engine owns its runtime: Bevy is reference material only (ADR-0001).
+      - name: No Bevy in the dependency graph
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          if cargo tree --workspace --prefix none --no-dedupe | grep -iqE '^bevy'; then
+            echo "::error::Bevy crate found in the dependency graph"
+            exit 1
+          fi
+
+      - name: Headless smoke run
+        run: cargo run --locked -p sample_game -- --headless 120
+
+      # Content is data, so a dangling reference or a malformed file must fail
+      # the build rather than the game. assets/content is the shipped content
+      # root; tests/fixtures/content-invalid is exercised by the loader's own
+      # tests, which assert that bad content is rejected.
+      - name: Validate content
+        run: cargo run --locked -p content_runtime --bin validate-content -- assets/content

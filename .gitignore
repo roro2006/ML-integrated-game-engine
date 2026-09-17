@@ -1,0 +1,14 @@
+/target
+
+# Save data, generated content, logs, and caches are user/machine-specific.
+/saves/*
+!/saves/README.md
+*.log
+
+# Secrets and local configuration.
+.env
+.env.*
+*.local.toml
+
+# Windows download metadata streams copied through WSL.
+*:Zone.Identifier
