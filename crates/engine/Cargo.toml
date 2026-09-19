@@ -1,0 +1,16 @@
+[package]
+name = "engine"
+description = "Engine runtime: ECS, scheduling, time, input, diagnostics, renderer facade"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+glam.workspace = true
+platform.workspace = true
+renderer.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,285 @@
+//! Frame submission: the boundary between the engine's extraction step and the
+//! GPU backend.
+//!
+//! Matrices cross this boundary as plain `[[f32; 4]; 4]` rather than math-library
+//! types, which is what keeps `glam` confined to `engine::math` (ADR-0008).
+//!
+//! Culling and draw ordering happen in the engine, not here. A [`RenderFrame`]
+//! is a finished list: the backend draws exactly what it is given, in the order
+//! given. That keeps the GPU layer dumb and leaves culling testable headlessly.
+
+use crate::Color;
+use crate::debug_lines::DebugVertex;
+
+/// Handle to a mesh uploaded to the GPU.
+///
+/// Runtime-only, like an ECS entity handle: never persist one in canonical
+/// state, a save file, or generated content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct MeshHandle(u32);
+
+/// Handle to a registered material.
+///
+/// Runtime-only; see [`MeshHandle`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct MaterialHandle(u32);
+
+impl MeshHandle {
+    /// Builds a handle from a raw index.
+    ///
+    /// A handle is a plain index, validated at draw time rather than at
+    /// construction: `Renderer::render` skips a draw whose handle resolves to
+    /// nothing and counts it, so a fabricated or stale handle costs that one
+    /// draw instead of the frame or the process.
+    ///
+    /// Public because the engine's extraction and culling logic has to be
+    /// testable without a GPU, and `Renderer::upload_mesh` — the only other way
+    /// to get a handle — needs a device.
+    pub const fn from_index(index: u32) -> Self {
+        Self(index)
+    }
+
+    pub const fn index(self) -> u32 {
+        self.0
+    }
+}
+
+impl MaterialHandle {
+    /// Builds a handle from a raw index. See [`MeshHandle::from_index`].
+    pub const fn from_index(index: u32) -> Self {
+        Self(index)
+    }
+
+    pub const fn index(self) -> u32 {
+        self.0
+    }
+}
+
+/// What a surface looks like. Textures arrive in a later milestone.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MaterialDesc {
+    /// Linear RGBA. The surface is sRGB and the GPU converts on write, so these
+    /// are linear values, not sRGB ones.
+    ///
+    /// A *tint*, multiplied by each vertex's colour (ADR-0017). On a mesh with
+    /// no vertex colours that is the whole colour, exactly as before.
+    pub base_color: [f32; 4],
+    /// A colour the lit result is mixed toward: rgb, with `a` as the amount
+    /// from 0 (none) to 1 (solid).
+    ///
+    /// What lets a cue — a hit flash, a wind-up — read on a vertex-coloured
+    /// body. A white tint multiplied into painted vertices changes nothing, so
+    /// a flash expressed as a tint would vanish without a trace.
+    pub flash: [f32; 4],
+}
+
+impl Default for MaterialDesc {
+    fn default() -> Self {
+        Self {
+            base_color: [1.0, 1.0, 1.0, 1.0],
+            flash: [0.0, 0.0, 0.0, 0.0],
+        }
+    }
+}
+
+/// The single directional light the forward pass supports.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DirectionalLight {
+    /// Direction **to** the light, normalized. Use [`with_direction`](Self::with_direction)
+    /// if the source value might not be.
+    pub direction: [f32; 3],
+    pub color: [f32; 3],
+    pub intensity: f32,
+}
+
+impl DirectionalLight {
+    /// Sets the direction, normalizing it. A zero-length direction keeps the
+    /// previous one rather than producing NaNs in the shader.
+    #[must_use]
+    pub fn with_direction(mut self, direction: [f32; 3]) -> Self {
+        let length_squared =
+            direction[0] * direction[0] + direction[1] * direction[1] + direction[2] * direction[2];
+        if length_squared > 1e-12 {
+            let inverse = 1.0 / length_squared.sqrt();
+            self.direction = [
+                direction[0] * inverse,
+                direction[1] * inverse,
+                direction[2] * inverse,
+            ];
+        }
+        self
+    }
+}
+
+impl Default for DirectionalLight {
+    /// A high afternoon key light, angled so low-poly facets read clearly.
+    fn default() -> Self {
+        Self {
+            direction: [0.0, 1.0, 0.0],
+            color: [1.0, 0.98, 0.92],
+            intensity: 1.0,
+        }
+        .with_direction([0.35, 0.8, 0.45])
+    }
+}
+
+/// Flat ambient fill, so faces pointing away from the key light stay readable.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AmbientLight {
+    pub color: [f32; 3],
+    pub intensity: f32,
+}
+
+impl Default for AmbientLight {
+    fn default() -> Self {
+        Self {
+            color: [0.55, 0.62, 0.78],
+            intensity: 0.25,
+        }
+    }
+}
+
+/// One mesh drawn once, with its transform already resolved to world space.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DrawCommand {
+    pub mesh: MeshHandle,
+    pub material: MaterialHandle,
+    pub model: [[f32; 4]; 4],
+    /// Inverse-transpose of the model matrix's 3x3 linear part, widened to 4x4
+    /// for uniform alignment. See `docs/plans/m3-renderer.md`.
+    pub normal_matrix: [[f32; 4]; 4],
+}
+
+/// Everything the backend needs to render one frame.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RenderFrame {
+    pub view_proj: [[f32; 4]; 4],
+    pub clear_color: Color,
+    pub light: DirectionalLight,
+    pub ambient: AmbientLight,
+    /// Already culled and ordered by the engine.
+    pub draws: Vec<DrawCommand>,
+    /// Debug line vertices in **world space**, consumed in pairs as a
+    /// `LineList` after the opaque geometry.
+    ///
+    /// Separate from `draws` because they share nothing: a debug line has no
+    /// mesh, no material, and no model matrix, and the pass that draws them
+    /// tests depth without writing it. An empty list means no debug pass is
+    /// recorded at all, so a frame that draws none costs nothing.
+    pub debug_lines: Vec<DebugVertex>,
+}
+
+const IDENTITY: [[f32; 4]; 4] = [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.0],
+    [0.0, 0.0, 0.0, 1.0],
+];
+
+impl RenderFrame {
+    pub fn new(view_proj: [[f32; 4]; 4], clear_color: Color) -> Self {
+        Self {
+            view_proj,
+            clear_color,
+            light: DirectionalLight::default(),
+            ambient: AmbientLight::default(),
+            draws: Vec::new(),
+            debug_lines: Vec::new(),
+        }
+    }
+
+    pub fn push(&mut self, draw: DrawCommand) {
+        self.draws.push(draw);
+    }
+
+    /// Clears the draw list while keeping allocated capacity, so per-frame
+    /// extraction does not reallocate every frame.
+    ///
+    /// Leaves `debug_lines` alone: debug drawing accumulates in the engine and
+    /// is moved in after extraction, so the two lists have different lifetimes
+    /// and clearing them together would drop one of them at the wrong moment.
+    pub fn clear_draws(&mut self) {
+        self.draws.clear();
+    }
+
+    /// Appends one world-space line segment.
+    ///
+    /// The engine's `DebugDraw` resource is the usual producer; this exists for
+    /// callers already holding plain arrays, and for tests.
+    pub fn push_debug_line(&mut self, start: [f32; 3], end: [f32; 3], color: [f32; 4]) {
+        self.debug_lines.push(DebugVertex::new(start, color));
+        self.debug_lines.push(DebugVertex::new(end, color));
+    }
+
+    /// Clears the debug line list, keeping its allocated capacity.
+    pub fn clear_debug_lines(&mut self) {
+        self.debug_lines.clear();
+    }
+}
+
+impl Default for RenderFrame {
+    fn default() -> Self {
+        Self::new(IDENTITY, Color::BLACK)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_light_direction_is_normalized() {
+        let light = DirectionalLight::default();
+        let length = light
+            .direction
+            .iter()
+            .map(|component| component * component)
+            .sum::<f32>()
+            .sqrt();
+        assert!((length - 1.0).abs() < 1e-6, "direction was {length}");
+    }
+
+    #[test]
+    fn with_direction_normalizes_and_ignores_zero() {
+        let light = DirectionalLight::default().with_direction([0.0, 5.0, 0.0]);
+        assert_eq!(light.direction, [0.0, 1.0, 0.0]);
+
+        let unchanged = light.with_direction([0.0, 0.0, 0.0]);
+        assert_eq!(unchanged.direction, [0.0, 1.0, 0.0], "zero must not produce NaN");
+    }
+
+    #[test]
+    fn frame_draw_list_round_trips() {
+        let mut frame = RenderFrame::default();
+        assert!(frame.draws.is_empty());
+        frame.push(DrawCommand {
+            mesh: MeshHandle::from_index(0),
+            material: MaterialHandle::from_index(0),
+            model: IDENTITY,
+            normal_matrix: IDENTITY,
+        });
+        assert_eq!(frame.draws.len(), 1);
+        frame.clear_draws();
+        assert!(frame.draws.is_empty());
+    }
+
+    #[test]
+    fn debug_lines_are_pairs_of_vertices_and_survive_clear_draws() {
+        let mut frame = RenderFrame::default();
+        assert!(frame.debug_lines.is_empty(), "a new frame draws no debug lines");
+
+        frame.push_debug_line([0.0, 0.0, 0.0], [1.0, 2.0, 3.0], [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(frame.debug_lines.len(), 2, "one line is two vertices");
+        assert_eq!(frame.debug_lines[1].position, [1.0, 2.0, 3.0]);
+        assert_eq!(
+            frame.debug_lines[0].color, frame.debug_lines[1].color,
+            "both ends carry the line's colour"
+        );
+
+        // The two lists are cleared on different schedules.
+        frame.clear_draws();
+        assert_eq!(frame.debug_lines.len(), 2);
+        frame.clear_debug_lines();
+        assert!(frame.debug_lines.is_empty());
+    }
+}
