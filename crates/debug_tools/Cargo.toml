@@ -1,0 +1,20 @@
+[package]
+name = "debug_tools"
+description = "Debug overlays, inspectors, replay tooling, and content candidate review"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+engine.workspace = true
+game_core.workspace = true
+
+[dev-dependencies]
+# Tests only: the domain inspector asserts that a world and the same world
+# reloaded from a save inspect identically. The library serializes nothing.
+ron.workspace = true
+
+[lints]
+workspace = true

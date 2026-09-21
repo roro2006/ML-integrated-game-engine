@@ -1,0 +1,23 @@
+[package]
+name = "game_runtime"
+description = "Domain-to-ECS projection, gameplay systems, and UI glue"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+content_runtime.workspace = true
+engine.workspace = true
+game_core.workspace = true
+narrative.workspace = true
+procedural_gen.workspace = true
+
+[dev-dependencies]
+# Tests only: they assert that projecting a world leaves its serialized
+# canonical state byte-identical. The library itself serializes nothing.
+ron.workspace = true
+
+[lints]
+workspace = true

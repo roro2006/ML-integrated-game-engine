@@ -1,0 +1,18 @@
+[package]
+name = "ai_gateway"
+description = "Optional out-of-process AI provider abstraction, queue, validation, and fallback"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Not yet used: `InstanceScope` and `WorldFact::subject` are plain strings today
+# with a documented seam, so ID syntax keeps exactly one owner (`game_core::ids`).
+# They become typed ids when the AI pipeline lands in M9.
+game_core.workspace = true
+serde.workspace = true
+
+[lints]
+workspace = true
