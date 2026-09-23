@@ -1,0 +1,61 @@
+// A hollow in the waste, self-contained: its keeper gives the quest, and
+// everything the quest asks for is here.
+[
+    (
+        schema_version: 1,
+        id: "cinder-hollow",
+        name: "Cinder Hollow",
+        region: "ashfall-waste",
+        kind: Wilderness,
+        spawns: [
+            (
+                id: "hollow-start",
+                placement: (at: (x: 0, y: 0, z: -8000), yaw_milli_turns: 0),
+                role: PlayerStart,
+            ),
+            (
+                id: "keeper-post",
+                placement: (at: (x: 3000, y: 0, z: -8000), yaw_milli_turns: 750),
+                role: Npc(npc: "hollow-keeper"),
+            ),
+            (
+                id: "ember-north",
+                placement: (at: (x: -6000, y: 0, z: -2000), yaw_milli_turns: 0),
+                role: Gatherable(item: "hollow-ember"),
+            ),
+            (
+                id: "ember-south",
+                placement: (at: (x: 6000, y: 0, z: -2000), yaw_milli_turns: 0),
+                role: Gatherable(item: "hollow-ember"),
+            ),
+            (
+                id: "cinder-west",
+                placement: (at: (x: -2500, y: 0, z: 6000), yaw_milli_turns: 500),
+                role: Enemy(prefab: "cinder-husk", encounter: Some("hollow-stand")),
+            ),
+            (
+                id: "cinder-east",
+                placement: (at: (x: 2500, y: 0, z: 6000), yaw_milli_turns: 500),
+                role: Enemy(prefab: "cinder-husk", encounter: Some("hollow-stand")),
+            ),
+            (
+                id: "ash-riser",
+                placement: (at: (x: 0, y: 0, z: 8000), yaw_milli_turns: 500),
+                role: Enemy(prefab: "corrupted-husk", encounter: Some("hollow-stand"), wave: 1),
+            ),
+        ],
+        props: [],
+        navmesh: [
+            (
+                vertices: [
+                    (x: -10000, y: 0, z: -10000),
+                    (x: 10000, y: 0, z: -10000),
+                    (x: 10000, y: 0, z: 10000),
+                    (x: -10000, y: 0, z: 10000),
+                ],
+                neighbours: [],
+            ),
+        ],
+        links: [],
+    ),
+]

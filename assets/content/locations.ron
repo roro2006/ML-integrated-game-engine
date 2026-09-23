@@ -1,0 +1,247 @@
+// The slice's three spaces: the hub, the lane between, and the dungeon
+// (PROJECT_CONTEXT §6).
+//
+// Coordinates are fixed-point milli-metres: 4000 is 4 m. Nav polygons wind
+// counter-clockwise seen from above; a reversed one is floor that pathfinding
+// silently refuses to cross, which validation rejects.
+[
+    (
+        schema_version: 1,
+        id: "cinderwake-square",
+        name: "Cinderwake Square",
+        region: "cinderwake",
+        kind: Settlement,
+        spawns: [
+            (
+                id: "player-start",
+                placement: (at: (x: 0, y: 0, z: 0), yaw_milli_turns: 0),
+                role: PlayerStart,
+            ),
+            (
+                id: "sela-post",
+                placement: (at: (x: 3000, y: 0, z: 2000), yaw_milli_turns: 500),
+                role: Npc(npc: "warden-sela", model: Some("warden-sela")),
+            ),
+            (
+                id: "upgrade-board",
+                placement: (at: (x: -3000, y: 0, z: 1000), yaw_milli_turns: 250),
+                role: Station(kind: Upgrades),
+            ),
+            // The forge: where gathered materials become equipment. Standing
+            // apart from the board so one spot never offers both.
+            (
+                id: "settlement-forge",
+                placement: (at: (x: 5000, y: 0, z: -2000), yaw_milli_turns: 750),
+                role: Station(kind: Crafting),
+            ),
+            (
+                id: "lane-gate",
+                placement: (at: (x: 0, y: 0, z: 9000), yaw_milli_turns: 0),
+                role: Station(kind: Doorway),
+            ),
+        ],
+        props: [],
+        navmesh: [
+            (
+                vertices: [
+                    (x: -10000, y: 0, z: -10000),
+                    (x: 10000, y: 0, z: -10000),
+                    (x: 10000, y: 0, z: 10000),
+                    (x: -10000, y: 0, z: 10000),
+                ],
+                neighbours: [],
+            ),
+        ],
+        links: [
+            (from: "lane-gate", to: "ashfall-lane", arrive_at: "lane-entrance"),
+        ],
+    ),
+    (
+        schema_version: 1,
+        id: "ashfall-lane",
+        name: "Ashfall Lane",
+        region: "ashfall-waste",
+        kind: Wilderness,
+        spawns: [
+            (
+                id: "lane-entrance",
+                placement: (at: (x: 0, y: 0, z: -12000), yaw_milli_turns: 0),
+                role: PlayerStart,
+            ),
+            // The way back. A link's `from` has to be a station, because that is
+            // what becomes a thing in the world you can use — pointing a return
+            // door at the arrival point left the lane with no exit at all.
+            (
+                id: "lane-exit",
+                placement: (at: (x: 0, y: 0, z: -13000), yaw_milli_turns: 500),
+                role: Station(kind: Doorway),
+            ),
+            // The waterworks ambush: three husks and a spitter, matching the
+            // encounter's slots — the loader checks that they agree. Two
+            // husks stand in the open; the third and the spitter are wave 1,
+            // arriving once those two fall. A `Defeat` objective completes
+            // only when the last wave is down.
+            (
+                id: "husk-picket",
+                placement: (at: (x: 2000, y: 0, z: 0), yaw_milli_turns: 750),
+                role: Enemy(prefab: "corrupted-husk", encounter: Some("waterworks-ambush")),
+            ),
+            (
+                id: "husk-verge",
+                placement: (at: (x: 4000, y: 0, z: 1500), yaw_milli_turns: 625),
+                role: Enemy(prefab: "corrupted-husk", encounter: Some("waterworks-ambush")),
+            ),
+            (
+                id: "husk-drift",
+                placement: (at: (x: -2000, y: 0, z: -1000), yaw_milli_turns: 875),
+                role: Enemy(prefab: "corrupted-husk", encounter: Some("waterworks-ambush"), wave: 1),
+            ),
+            (
+                id: "spitter-ridge",
+                placement: (at: (x: -4000, y: 0, z: 3000), yaw_milli_turns: 125),
+                role: Enemy(prefab: "resin-spitter", encounter: Some("waterworks-ambush"), wave: 1),
+            ),
+            // The old forest's picket, holding the approach to the crypt. Its
+            // encounter and its enemy were both authored and placed nowhere,
+            // so the fourth enemy type was content nothing could meet.
+            //
+            // Chargers, not husks: they close fast and recover slowly, which
+            // makes the way to the crypt a different fight from the ambush
+            // rather than more of it.
+            (
+                id: "warden-picket-west",
+                placement: (at: (x: -2500, y: 0, z: 9000), yaw_milli_turns: 500),
+                role: Enemy(prefab: "bark-warden", encounter: Some("old-forest-picket")),
+            ),
+            (
+                id: "warden-picket-east",
+                placement: (at: (x: 2500, y: 0, z: 9500), yaw_milli_turns: 500),
+                role: Enemy(prefab: "bark-warden", encounter: Some("old-forest-picket")),
+            ),
+            (
+                id: "reed-bed",
+                placement: (at: (x: 5000, y: 0, z: 6000), yaw_milli_turns: 0),
+                role: Gatherable(item: "still-reed"),
+            ),
+            (
+                id: "bark-stand",
+                placement: (at: (x: -6000, y: 0, z: 8000), yaw_milli_turns: 0),
+                role: Gatherable(item: "old-forest-bark"),
+            ),
+            (
+                id: "crypt-mouth",
+                placement: (at: (x: 0, y: 0, z: 14000), yaw_milli_turns: 0),
+                role: Station(kind: Doorway),
+            ),
+            // The quest's middle: something to examine, then a decision to
+            // settle. Both are placed well apart from each other and from the
+            // gatherables, so standing in one spot never offers two of them.
+            (
+                id: "fouled-intake",
+                placement: (at: (x: 6000, y: 0, z: 4000), yaw_milli_turns: 500),
+                role: Clue(
+                    clue: "clue-fouled-intake",
+                    text: Some("Resin clogs the grate, still soft. Someone packed it here within the week, and the tracks lead toward the old forest."),
+                ),
+            ),
+            (
+                id: "water-rights-marker",
+                placement: (at: (x: -6000, y: 0, z: 5000), yaw_milli_turns: 0),
+                role: Choice(
+                    choice: "choice-water-rights",
+                    prompt: Some("The water-rights marker. Planting it settles who holds the waterworks, and it cannot be taken back. Settle it now?"),
+                ),
+            ),
+            // Arbiter Thal speaks for the old forest. He had a conversation and
+            // an escort objective but stood in no location, so nothing could
+            // reach him.
+            (
+                id: "thal-post",
+                placement: (at: (x: -5000, y: 0, z: -8000), yaw_milli_turns: 250),
+                role: Npc(npc: "arbiter-thal", model: Some("arbiter-thal")),
+            ),
+        ],
+        props: [],
+        navmesh: [
+            (
+                vertices: [
+                    (x: -8000, y: 0, z: -14000),
+                    (x: 8000, y: 0, z: -14000),
+                    (x: 8000, y: 0, z: 2000),
+                    (x: -8000, y: 0, z: 2000),
+                ],
+                neighbours: [1],
+            ),
+            (
+                vertices: [
+                    (x: -8000, y: 0, z: 2000),
+                    (x: 8000, y: 0, z: 2000),
+                    (x: 8000, y: 0, z: 16000),
+                    (x: -8000, y: 0, z: 16000),
+                ],
+                neighbours: [0],
+            ),
+        ],
+        links: [
+            (from: "lane-exit", to: "cinderwake-square", arrive_at: "lane-gate"),
+            (from: "crypt-mouth", to: "crypt-of-ash", arrive_at: "crypt-entrance"),
+        ],
+    ),
+    (
+        schema_version: 1,
+        id: "crypt-of-ash",
+        name: "Crypt of Ash",
+        region: "ashfall-waste",
+        kind: Dungeon,
+        spawns: [
+            (
+                id: "crypt-entrance",
+                placement: (at: (x: 0, y: 0, z: -6000), yaw_milli_turns: 0),
+                role: PlayerStart,
+            ),
+            (
+                id: "crypt-exit",
+                placement: (at: (x: 0, y: 0, z: -6500), yaw_milli_turns: 500),
+                role: Station(kind: Doorway),
+            ),
+            // The set-piece. The spawn ids deliberately differ from the
+            // encounter id `ashlord-stand`: a placement and a fight are
+            // different things, and sharing a name invites confusing them.
+            (
+                id: "ashlord-dais",
+                placement: (at: (x: 0, y: 0, z: 4000), yaw_milli_turns: 500),
+                role: Enemy(prefab: "husk-ashlord", encounter: Some("ashlord-stand")),
+            ),
+            (
+                id: "ashlord-guard-west",
+                placement: (at: (x: -2000, y: 0, z: 3000), yaw_milli_turns: 500),
+                role: Enemy(prefab: "corrupted-husk", encounter: Some("ashlord-stand")),
+            ),
+            (
+                id: "ashlord-guard-east",
+                placement: (at: (x: 2000, y: 0, z: 3000), yaw_milli_turns: 500),
+                role: Enemy(prefab: "corrupted-husk", encounter: Some("ashlord-stand")),
+            ),
+            (
+                id: "warden-relic",
+                placement: (at: (x: 2500, y: 0, z: 5000), yaw_milli_turns: 0),
+                role: Gatherable(item: "corrupt-resin"),
+            ),
+        ],
+        props: [],
+        navmesh: [
+            (
+                vertices: [
+                    (x: -6000, y: 0, z: -7000),
+                    (x: 6000, y: 0, z: -7000),
+                    (x: 6000, y: 0, z: 7000),
+                    (x: -6000, y: 0, z: 7000),
+                ],
+                neighbours: [],
+            ),
+        ],
+        links: [
+            (from: "crypt-exit", to: "ashfall-lane", arrive_at: "crypt-mouth"),
+        ],
+    ),
+]

@@ -1,0 +1,10 @@
+// Fixture `choice-not-offered` (M9 wave 1): no marker settles the choice and no conversation offers it.
+[
+    (
+        schema_version: 1,
+        id: "cellar-moss",
+        name: "Cellar Moss",
+        category: Material,
+        stack_limit: 20,
+    ),
+]

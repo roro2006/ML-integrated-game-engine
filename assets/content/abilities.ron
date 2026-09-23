@@ -1,0 +1,160 @@
+// Player and enemy abilities, composed only from the allowlisted effect
+// primitives in PROJECT_CONTEXT §7. Every window is in fixed simulation ticks
+// (60 per second by default), never seconds: ADR-0007's Souls-lite combat
+// depends on those windows being frame-rate independent.
+//
+// Fixed-point values are milli-units, so 20000 is 20.0 stamina.
+//
+// `presentation` is how an ability looks and nothing else (ADR-0017 §8): a
+// clip to play through its windows, an effect on the caster when it lands, an
+// effect on everyone it changed, and — for area abilities only — a telegraph
+// on the ground it will land on, shaped by its targeting rather than authored.
+[
+    (
+        schema_version: 1,
+        id: "ember-cleave",
+        name: "Ember Cleave",
+        targeting: SingleEnemy,
+        cost: 20000,
+        cooldown_ticks: 90,
+        windup_ticks: 14,
+        recovery_ticks: 26,
+        effects: [
+            DealDamage(amount: 18000, damage_type: Fire),
+        ],
+        presentation: (
+            clip: Some("ember-cleave-cast"),
+            impact: Some("ember-lash"),
+        ),
+    ),
+    (
+        schema_version: 1,
+        id: "warden-guard",
+        name: "Warden's Guard",
+        targeting: SelfOnly,
+        cost: 15000,
+        cooldown_ticks: 150,
+        windup_ticks: 6,
+        recovery_ticks: 12,
+        effects: [
+            ApplyStatus(status: "status-guarded", duration_ticks: 180),
+            ModifyResource(resource: Stamina, amount: -5000),
+        ],
+        presentation: (
+            clip: Some("guard-brace"),
+            cast: Some("guard-shimmer"),
+        ),
+    ),
+    (
+        schema_version: 1,
+        id: "call-husks",
+        name: "Call Husks",
+        targeting: AreaAroundSelf,
+        cost: 30000,
+        cooldown_ticks: 600,
+        windup_ticks: 45,
+        recovery_ticks: 40,
+        effects: [
+            SpawnEntity(prefab: "corrupted-husk", count: 2),
+            EmitEvent(event: "event-husks-called"),
+        ],
+        // No telegraph: a summoning harms nobody where it stands, and a
+        // ring on the ground would warn of a blow that never comes.
+        presentation: (
+            cast: Some("husk-summoning"),
+        ),
+    ),
+    // The first skillshot (ADR-0017 §7): a bolt of fire thrown along the
+    // wayfinder's facing. It strikes the first enemy it passes, stops at walls,
+    // and can be sidestepped — or rolled through, since a dodge's invulnerable
+    // window holds against it as against a swing.
+    //
+    // Targeting is `SelfOnly` because the bolt aims itself along the caster's
+    // facing: targeting names whom an ability's *other* effects touch, and
+    // this one has none. The telegraph is a lane along that aim, for as long
+    // as the wind-up lasts.
+    (
+        schema_version: 1,
+        id: "ember-bolt",
+        name: "Ember Bolt",
+        targeting: SelfOnly,
+        cost: 15000,
+        cooldown_ticks: 75,
+        windup_ticks: 12,
+        recovery_ticks: 14,
+        effects: [
+            Projectile(
+                speed: 16000,
+                range: 14000,
+                radius: 250,
+                on_hit: [
+                    DealDamage(amount: 14000, damage_type: Fire),
+                    // Two seconds of burning: six more, answered by fire
+                    // resistance like the bolt itself (M9).
+                    ApplyStatus(status: "status-smouldering", duration_ticks: 120),
+                ],
+            ),
+        ],
+        presentation: (
+            clip: Some("bolt-throw"),
+            projectile: Some("ember-bolt"),
+            trail: Some("ember-trail"),
+            impact: Some("ember-bolt-burst"),
+            telegraph: true,
+        ),
+    ),
+    // The resin spitter's skillshot (M8): a glob of resin lobbed along its
+    // aim, slow enough to sidestep once you have seen the lane. Corruption
+    // damage, so resisting corruption answers it.
+    (
+        schema_version: 1,
+        id: "resin-spit",
+        name: "Resin Spit",
+        targeting: SelfOnly,
+        cost: 0,
+        cooldown_ticks: 100,
+        windup_ticks: 24,
+        recovery_ticks: 22,
+        effects: [
+            Projectile(
+                speed: 11000,
+                range: 11000,
+                radius: 300,
+                on_hit: [
+                    DealDamage(amount: 7000, damage_type: Corruption),
+                    // Three seconds of slow stamina: the glob's real cost is
+                    // the roll you cannot afford next (M9).
+                    ApplyStatus(status: "status-resin-mired", duration_ticks: 180),
+                ],
+            ),
+        ],
+        presentation: (
+            projectile: Some("resin-glob"),
+            trail: Some("resin-drip"),
+            impact: Some("resin-splash"),
+            telegraph: true,
+        ),
+    ),
+    // The ashlord's answer to anyone who closes in (M8): it raises both fists
+    // and brings them down, and the ground around it heaves. The circle is
+    // marked through a long wind-up — step out of it or roll through the
+    // blow.
+    (
+        schema_version: 1,
+        id: "ash-slam",
+        name: "Ash Slam",
+        targeting: AreaAroundSelf,
+        cost: 0,
+        cooldown_ticks: 240,
+        windup_ticks: 45,
+        recovery_ticks: 40,
+        effects: [
+            DealDamage(amount: 20000, damage_type: Physical),
+        ],
+        presentation: (
+            cast: Some("ash-quake"),
+            impact: Some("strike-sparks"),
+            telegraph: true,
+        ),
+    ),
+]

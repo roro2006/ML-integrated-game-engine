@@ -1,0 +1,10 @@
+// Fixture `unreachable` (M9 wave 1): no door leads down to the cellar.
+[
+    (
+        schema_version: 1,
+        id: "cellar-moss",
+        name: "Cellar Moss",
+        category: Material,
+        stack_limit: 20,
+    ),
+]

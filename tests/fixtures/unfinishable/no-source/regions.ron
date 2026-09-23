@@ -1,0 +1,9 @@
+// Fixture `no-source` (M9 wave 1): the item to collect comes from nowhere: the moss patch is gone.
+[
+    (
+        schema_version: 1,
+        id: "fixture-region",
+        name: "Fixture Region",
+        biome: Settlement,
+    ),
+]

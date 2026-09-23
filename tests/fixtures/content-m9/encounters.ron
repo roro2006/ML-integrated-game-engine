@@ -1,0 +1,14 @@
+// Two cinder husks, then a plain one out of the ash when they fall.
+[
+    (
+        schema_version: 1,
+        id: "hollow-stand",
+        name: "The Hollow Stand",
+        threat_budget: 4000,
+        slots: [
+            (enemy: "cinder-husk", count: 2),
+            (enemy: "corrupted-husk", count: 1),
+        ],
+        arrival: Some("ash-rising"),
+    ),
+]

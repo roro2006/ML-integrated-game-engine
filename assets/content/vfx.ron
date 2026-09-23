@@ -1,0 +1,164 @@
+// Visual effects (ADR-0017 §6).
+//
+// An effect is up to four parts, each a primitive the runtime owns: a Burst of
+// chunky shards thrown up and out, a Pulse spreading along the ground, or a
+// Beam from where the effect came from to where it plays. Colours are swatches
+// from a palette. Sizes are milli-metres, speeds milli-metres per second,
+// gravity milli-metres per second squared, and lengths fixed ticks (60 per
+// second).
+//
+// Presentation only: nothing in the simulation reads an effect, so none of
+// these numbers can change a fight.
+[
+    // Ember Cleave landing: a lash of fire from the wayfinder to the target,
+    // and embers thrown off where it struck.
+    (
+        schema_version: 1,
+        id: "ember-lash",
+        name: "Ember lash",
+        palette: "cinderwake",
+        parts: [
+            Beam(color: "ember", width: 160, ticks: 12),
+            Burst(color: "ember", count: 16, size: 120, speed: 4500, gravity: 12000, ticks: 28),
+            Pulse(color: "eye", radius: 1400, ticks: 16),
+        ],
+    ),
+    // Warden's Guard taking hold: a ring of steel light and motes rising.
+    (
+        schema_version: 1,
+        id: "guard-shimmer",
+        name: "Guard shimmer",
+        palette: "cinderwake",
+        parts: [
+            Pulse(color: "steel", radius: 1600, ticks: 22),
+            Burst(color: "warden-trim", count: 12, size: 90, speed: 2000, ticks: 34),
+        ],
+    ),
+    // Call Husks: the ground heaves with corruption as the husks come.
+    (
+        schema_version: 1,
+        id: "husk-summoning",
+        name: "Husk summoning",
+        palette: "cinderwake",
+        parts: [
+            Pulse(color: "corruption-glow", radius: 3500, ticks: 40),
+            Burst(color: "corruption", count: 24, size: 160, speed: 3500, gravity: 8000, ticks: 45),
+        ],
+    ),
+    // Shed behind an ember bolt every few ticks: a few embers that drift and
+    // sink, so a bolt's path stays readable a moment after it has passed.
+    (
+        schema_version: 1,
+        id: "ember-trail",
+        name: "Ember trail",
+        palette: "cinderwake",
+        parts: [
+            Burst(color: "ember", count: 3, size: 90, speed: 600, gravity: 3000, ticks: 20),
+        ],
+    ),
+    // An ember bolt striking: a burst of coals and a scorch ring.
+    (
+        schema_version: 1,
+        id: "ember-bolt-burst",
+        name: "Ember bolt burst",
+        palette: "cinderwake",
+        parts: [
+            Burst(color: "ember", count: 14, size: 110, speed: 3500, gravity: 10000, ticks: 26),
+            Pulse(color: "eye", radius: 1100, ticks: 14),
+        ],
+    ),
+    // Resin dripping from a glob in flight: heavy, and quick to fall.
+    (
+        schema_version: 1,
+        id: "resin-drip",
+        name: "Resin drip",
+        palette: "cinderwake",
+        parts: [
+            Burst(color: "resin", count: 2, size: 80, speed: 300, gravity: 9000, ticks: 18),
+        ],
+    ),
+    // A glob of resin bursting: sticky gobbets and a corrupted stain.
+    (
+        schema_version: 1,
+        id: "resin-splash",
+        name: "Resin splash",
+        palette: "cinderwake",
+        parts: [
+            Burst(color: "resin", count: 12, size: 120, speed: 2500, gravity: 14000, ticks: 24),
+            Pulse(color: "corruption-glow", radius: 1000, ticks: 16),
+        ],
+    ),
+    // Where a reinforcement is about to stand: the ash heaves and spits
+    // cinders, a second before it arrives.
+    (
+        schema_version: 1,
+        id: "ash-rising",
+        name: "Ash rising",
+        palette: "cinderwake",
+        parts: [
+            Pulse(color: "ash", radius: 1200, ticks: 55),
+            Burst(color: "ash-dark", count: 10, size: 140, speed: 2200, gravity: 6000, ticks: 50),
+        ],
+    ),
+    // The wayfinder's blade: a bright steel arc cut on the diagonal, with an
+    // ember edge inside it.
+    (
+        schema_version: 1,
+        id: "blade-arc",
+        name: "Blade arc",
+        palette: "cinderwake",
+        parts: [
+            Slash(color: "steel", radius: 1500, arc: 150000, width: 220, tilt: 30000, ticks: 18),
+            Slash(color: "ember", radius: 1250, arc: 130000, width: 90, tilt: 30000, ticks: 14),
+        ],
+    ),
+    // Husk claws: two raking arcs side by side, raw corruption.
+    (
+        schema_version: 1,
+        id: "claw-rake",
+        name: "Claw rake",
+        palette: "cinderwake",
+        parts: [
+            Slash(color: "corruption-glow", radius: 1450, arc: 100000, width: 110, tilt: -40000, ticks: 16),
+            Slash(color: "corruption", radius: 1200, arc: 90000, width: 90, tilt: -40000, ticks: 16),
+        ],
+    ),
+    // A warden's sweep: a broad, flat arc of bark and leaves.
+    (
+        schema_version: 1,
+        id: "bark-sweep",
+        name: "Bark sweep",
+        palette: "cinderwake",
+        parts: [
+            Slash(color: "bark-dark", radius: 2000, arc: 170000, width: 280, ticks: 22),
+            Burst(color: "leaf", count: 8, size: 90, speed: 2500, gravity: 5000, ticks: 26),
+        ],
+    ),
+    // Where a blow connects: sparks and a flash of steel.
+    (
+        schema_version: 1,
+        id: "strike-sparks",
+        name: "Strike sparks",
+        palette: "cinderwake",
+        parts: [
+            Burst(color: "eye", count: 9, size: 55, speed: 4000, gravity: 12000, ticks: 14),
+            Burst(color: "steel", count: 5, size: 80, speed: 2500, gravity: 9000, ticks: 12),
+        ],
+    ),
+    // The ashlord's slam: the ground splits in glowing fissures, spires of
+    // rock with molten tips punch up out of it in a wave from the ashlord,
+    // loose rock is flung out, and a ring of dust rolls outward. The spires
+    // hold for a moment, then sink back into the ground they came from.
+    (
+        schema_version: 1,
+        id: "ash-quake",
+        name: "Ash quake",
+        palette: "cinderwake",
+        parts: [
+            Crack(color: "ember", count: 10, length: 5000, width: 120, ticks: 110),
+            Spire(color: "ash-dark", glow: Some("ember"), count: 9, height: 2800, width: 1000, spread: 4500, ticks: 120),
+            Burst(color: "ash-dark", count: 16, size: 240, speed: 6500, gravity: 18000, ticks: 55),
+            Pulse(color: "ash", radius: 6000, ticks: 32),
+        ],
+    ),
+]

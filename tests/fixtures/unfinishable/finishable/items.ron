@@ -1,0 +1,10 @@
+// Fixture `finishable` (M9 wave 1): the valid baseline every other fixture here breaks in exactly one place.
+[
+    (
+        schema_version: 1,
+        id: "cellar-moss",
+        name: "Cellar Moss",
+        category: Material,
+        stack_limit: 20,
+    ),
+]

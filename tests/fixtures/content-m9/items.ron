@@ -1,0 +1,21 @@
+[
+    (
+        schema_version: 1,
+        id: "hollow-ember",
+        name: "Hollow Ember",
+        category: Material,
+        stack_limit: 20,
+    ),
+    // Cools a burn's damage: health back, quickly.
+    (
+        schema_version: 1,
+        id: "cooling-salve",
+        name: "Cooling Salve",
+        category: Consumable,
+        stack_limit: 5,
+        on_use: Some((
+            effects: [ModifyResource(resource: Health, amount: 25000)],
+            use_ticks: 20,
+        )),
+    ),
+]

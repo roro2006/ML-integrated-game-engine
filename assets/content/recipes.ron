@@ -1,0 +1,40 @@
+// The three craftable recipes the vertical slice promises.
+// `requires_upgrade` names a settlement blueprint (ADR-0007), not a building.
+[
+    (
+        schema_version: 1,
+        id: "recipe-clearwater-draught",
+        name: "Clearwater Draught",
+        inputs: {
+            "still-reed": 2,
+            "corrupt-resin": 1,
+        },
+        output: "clearwater-draught",
+        output_quantity: 1,
+        requires_upgrade: None,
+    ),
+    (
+        schema_version: 1,
+        id: "recipe-ember-glaive",
+        name: "Ember Glaive",
+        inputs: {
+            "ember-ore": 6,
+            "old-forest-bark": 2,
+        },
+        output: "ember-glaive",
+        output_quantity: 1,
+        requires_upgrade: Some("upgrade-forge"),
+    ),
+    (
+        schema_version: 1,
+        id: "recipe-warden-seal",
+        name: "Warden's Seal",
+        inputs: {
+            "ash-cinder": 4,
+            "still-reed": 1,
+        },
+        output: "warden-seal",
+        output_quantity: 1,
+        requires_upgrade: Some("upgrade-scriptorium"),
+    ),
+]

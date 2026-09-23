@@ -1,0 +1,75 @@
+// Gatherables and crafted goods for the Cinderwake slice (PROJECT_CONTEXT §6).
+// Five gatherable resources plus the goods the three recipes produce.
+//
+// Ids are lowercase kebab-case; enum variants keep their Rust spelling, because
+// RON cannot parse a bare hyphenated identifier.
+[
+    (
+        schema_version: 1,
+        id: "ember-ore",
+        name: "Ember Ore",
+        category: Material,
+        stack_limit: 99,
+    ),
+    (
+        schema_version: 1,
+        id: "ash-cinder",
+        name: "Ash Cinder",
+        category: Material,
+        stack_limit: 99,
+    ),
+    (
+        schema_version: 1,
+        id: "still-reed",
+        name: "Still Reed",
+        category: Material,
+        stack_limit: 99,
+    ),
+    (
+        schema_version: 1,
+        id: "corrupt-resin",
+        name: "Corrupt Resin",
+        category: Material,
+        stack_limit: 50,
+    ),
+    (
+        schema_version: 1,
+        id: "old-forest-bark",
+        name: "Old-Forest Bark",
+        category: Material,
+        stack_limit: 50,
+    ),
+    (
+        schema_version: 1,
+        id: "clearwater-draught",
+        name: "Clearwater Draught",
+        category: Consumable,
+        stack_limit: 10,
+        // Drunk in half a second, during which you cannot swing or roll
+        // (M9): thirty health back, and stamina returns faster for a while.
+        on_use: Some((
+            effects: [
+                ModifyResource(resource: Health, amount: 30000),
+                ApplyStatus(status: "status-refreshed", duration_ticks: 300),
+            ],
+            use_ticks: 30,
+        )),
+    ),
+    (
+        schema_version: 1,
+        id: "ember-glaive",
+        name: "Ember Glaive",
+        category: Weapon,
+        stack_limit: 1,
+        // Fixed-point milli-units: 4000 is 4.0 damage. Retypes the wielder's
+        // attacks to Fire, which only a weapon-slot item may do.
+        combat: Some((damage: 4000, damage_type: Some(Fire))),
+    ),
+    (
+        schema_version: 1,
+        id: "warden-seal",
+        name: "Warden's Seal",
+        category: QuestItem,
+        stack_limit: 1,
+    ),
+]

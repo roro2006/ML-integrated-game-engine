@@ -1,0 +1,91 @@
+// Fixture `nobody-there` (M9 wave 1): the quest asks the player to talk to an npc placed in no location.
+[
+    (
+        schema_version: 1,
+        id: "hall",
+        name: "Hall",
+        region: "fixture-region",
+        kind: Settlement,
+        spawns: [
+            (
+                id: "hall-start",
+                placement: (at: (x: 0, y: 0, z: 0), yaw_milli_turns: 0),
+                role: PlayerStart,
+            ),
+            (
+                id: "keeper-post",
+                placement: (at: (x: 2000, y: 0, z: 0), yaw_milli_turns: 0),
+                role: Npc(npc: "hall-keeper"),
+            ),
+            (
+                id: "ledger",
+                placement: (at: (x: 4000, y: 0, z: 0), yaw_milli_turns: 0),
+                role: Clue(clue: "clue-ledger"),
+            ),
+            (
+                id: "lever",
+                placement: (at: (x: -2000, y: 0, z: 0), yaw_milli_turns: 0),
+                role: Choice(choice: "choice-lever"),
+            ),
+            (
+                id: "hall-stair",
+                placement: (at: (x: -4000, y: 0, z: 0), yaw_milli_turns: 0),
+                role: Station(kind: Doorway),
+            ),
+        ],
+        props: [],
+        navmesh: [
+            (
+                vertices: [
+                    (x: -8000, y: 0, z: -8000),
+                    (x: 8000, y: 0, z: -8000),
+                    (x: 8000, y: 0, z: 8000),
+                    (x: -8000, y: 0, z: 8000),
+                ],
+                neighbours: [],
+            ),
+        ],
+        links: [
+            (from: "hall-stair", to: "cellar", arrive_at: "cellar-start"),
+        ],
+    ),
+    (
+        schema_version: 1,
+        id: "cellar",
+        name: "Cellar",
+        region: "fixture-region",
+        kind: Settlement,
+        spawns: [
+            (
+                id: "cellar-start",
+                placement: (at: (x: 0, y: 0, z: 0), yaw_milli_turns: 0),
+                role: PlayerStart,
+            ),
+            (
+                id: "cellar-stair",
+                placement: (at: (x: -1000, y: 0, z: 0), yaw_milli_turns: 0),
+                role: Station(kind: Doorway),
+            ),
+            (
+                id: "moss-patch",
+                placement: (at: (x: 3000, y: 0, z: 0), yaw_milli_turns: 0),
+                role: Gatherable(item: "cellar-moss"),
+            ),
+        ],
+        props: [],
+        navmesh: [
+            (
+                vertices: [
+                    (x: -8000, y: 0, z: -8000),
+                    (x: 8000, y: 0, z: -8000),
+                    (x: 8000, y: 0, z: 8000),
+                    (x: -8000, y: 0, z: 8000),
+                ],
+                neighbours: [],
+            ),
+        ],
+        links: [
+            (from: "cellar-stair", to: "hall", arrive_at: "hall-start"),
+        ],
+    ),
+]

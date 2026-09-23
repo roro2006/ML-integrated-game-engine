@@ -1,0 +1,31 @@
+// Settlement blueprints (ADR-0007: functional upgrades, no placement tools).
+//
+// Each grants a world flag rather than being tracked in its own list, so
+// dialogue, recipes, and services all gate on one fact that cannot disagree
+// with itself.
+[
+    (
+        schema_version: 1,
+        id: "upgrade-forge",
+        name: "Rebuild the Forge",
+        costs: {
+            "ember-ore": 12,
+            "old-forest-bark": 4,
+        },
+        requires: [],
+        grants_flag: "forge-relit",
+    ),
+    (
+        schema_version: 1,
+        id: "upgrade-scriptorium",
+        name: "Raise the Scriptorium",
+        costs: {
+            "old-forest-bark": 8,
+            "still-reed": 6,
+        },
+        // The scriptorium needs the forge's tools first, which is what makes
+        // the upgrade loop a progression rather than a shopping list.
+        requires: ["upgrade-forge"],
+        grants_flag: "scriptorium-raised",
+    ),
+]

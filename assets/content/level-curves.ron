@@ -1,0 +1,14 @@
+// How much experience each level takes (ADR-0018). `thresholds` are totals:
+// the experience needed to reach level 2, 3, 4, and so on. The last entry is
+// the cap. Levels are recorded as reached, so retuning this never demotes
+// anyone.
+//
+// The slice's fights and two quests come to roughly 1500 experience, which
+// is level 6 of 10 — room to see a build take shape, and room to grow.
+[
+    (
+        schema_version: 1,
+        id: "standard",
+        thresholds: [100, 250, 450, 700, 1000, 1400, 1900, 2500, 3200],
+    ),
+]

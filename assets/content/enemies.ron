@@ -1,0 +1,90 @@
+// Three regular enemies and one elite (PROJECT_CONTEXT §6). The elite is a
+// `variant_of` the husk rather than a duplicated definition, which is the
+// pattern AI-proposed variants must also follow (ADR-0010).
+//
+// Health, damage and threat are milli-units: 60000 is 60.0 hit points.
+//
+// `tuning` (M8) sets an enemy's numbers — aggro acquire and release, preferred
+// range and reach in milli-metres, move speed in milli-metres per second, and
+// its swing's wind-up, active and recovery windows in ticks. Every field is
+// optional — written `Some(3000)`, like every optional field — and falls back to
+// the behaviour template's value; the template
+// still decides how the enemy thinks. Abilities are used in listed order: the
+// first ready, affordable, and in range wins, and a swing when none is.
+[
+    (
+        schema_version: 1,
+        id: "corrupted-husk",
+        name: "Corrupted Husk",
+        behavior: Melee,
+        max_health: 60000,
+        damage: 8000,
+        abilities: [],
+        visual_tags: ["corruption", "husk"],
+        threat: 1000,
+        variant_of: None,
+        loot_table: Some("husk-drops"),
+        model: Some("corrupted-husk"),
+        experience: 20,
+        presentation: (swing: Some("claw-rake"), hit: Some("strike-sparks")),
+    ),
+    (
+        schema_version: 1,
+        id: "resin-spitter",
+        name: "Resin Spitter",
+        behavior: Ranged,
+        max_health: 45000,
+        damage: 6500,
+        // Leads with its spit whenever it can. Between spits it only claws
+        // at whoever gets close enough to touch.
+        abilities: ["resin-spit"],
+        visual_tags: ["corruption", "ranged"],
+        threat: 1200,
+        variant_of: None,
+        loot_table: Some("husk-drops"),
+        model: Some("resin-spitter"),
+        experience: 25,
+        presentation: (swing: Some("claw-rake"), hit: Some("strike-sparks")),
+        tuning: (reach: Some(1400)),
+    ),
+    (
+        schema_version: 1,
+        id: "bark-warden",
+        name: "Bark Warden",
+        behavior: Charger,
+        max_health: 90000,
+        damage: 11000,
+        abilities: [],
+        visual_tags: ["bark", "old-forest"],
+        threat: 1800,
+        variant_of: None,
+        loot_table: Some("old-forest-drops"),
+        model: Some("bark-warden"),
+        experience: 35,
+        presentation: (swing: Some("bark-sweep"), hit: Some("strike-sparks")),
+    ),
+    (
+        schema_version: 1,
+        id: "husk-ashlord",
+        name: "Husk Ashlord",
+        behavior: Support,
+        // Hard because of what it does, not how long it takes to kill (M8):
+        // it summons husks at range and slams anyone who closes, and its deep
+        // poise means a trade that staggers a husk barely moves it.
+        max_health: 160000,
+        damage: 16000,
+        abilities: ["call-husks", "ash-slam"],
+        visual_tags: ["corruption", "elite", "husk"],
+        threat: 6000,
+        variant_of: Some("corrupted-husk"),
+        loot_table: Some("ashlord-drops"),
+        model: Some("husk-ashlord"),
+        experience: 150,
+        presentation: (swing: Some("claw-rake"), hit: Some("strike-sparks")),
+        tuning: (
+            poise: Some(120000),
+            reach: Some(1800),
+            strike_radius: Some(1000),
+        ),
+    ),
+]

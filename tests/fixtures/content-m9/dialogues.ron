@@ -1,0 +1,36 @@
+[
+    (
+        schema_version: 1,
+        id: "keeper-hollow",
+        speaker: "hollow-keeper",
+        start: "hello",
+        nodes: {
+            "hello": (
+                text: "The embers here burn cold until the husks come. Gather two and clear the stand.",
+                options: [
+                    (
+                        text: "I'll do it.",
+                        conditions: [QuestNotStarted("embers-in-the-hollow")],
+                        effects: [
+                            StartQuest("embers-in-the-hollow"),
+                            GrantItem(item: "cooling-salve", quantity: 1),
+                        ],
+                        next: None,
+                    ),
+                    (
+                        text: "It's done.",
+                        conditions: [QuestActive("embers-in-the-hollow")],
+                        effects: [],
+                        next: None,
+                    ),
+                    (
+                        text: "Later.",
+                        conditions: [],
+                        effects: [],
+                        next: None,
+                    ),
+                ],
+            ),
+        },
+    ),
+]

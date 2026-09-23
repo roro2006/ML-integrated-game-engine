@@ -1,0 +1,401 @@
+// Animation clips (ADR-0017 §5).
+//
+// A clip turns, offsets and scales a body's slots; turns are milli-degrees
+// about X, then Y, then Z, offsets milli-metres, scales milli-units. A turn of
+// +X swings a hanging limb forward (-Z); +Y turns to the left.
+//
+// Gameplay owns time. `Windows` clips are keyed across a committed action's
+// windows — 0..1000 wind-up, 1000..2000 active, 2000..3000 recovery — so a
+// slower attack in content plays a slower animation. `Span` runs start to end
+// of one action, `Loop` repeats every so many ticks, and `Stride` completes one
+// cycle per so many metres walked, so feet keep pace with the ground.
+[
+    (
+        schema_version: 1,
+        id: "humanoid-idle",
+        name: "Humanoid idle",
+        timing: Loop(ticks: 150),
+        tracks: [
+            (slot: "torso", keys: [
+                (at: 0, turn: (x: 0, y: 0, z: 0)),
+                (at: 500, turn: (x: 0, y: 0, z: 0), scale: (x: 1010, y: 1020, z: 1010)),
+                (at: 1000, turn: (x: 0, y: 0, z: 0)),
+            ]),
+            (slot: "head", keys: [
+                (at: 0, turn: (x: 0, y: 0, z: 0)),
+                (at: 500, turn: (x: 3000, y: 2000, z: 0)),
+                (at: 1000, turn: (x: 0, y: 0, z: 0)),
+            ]),
+            (slot: "arm-l", keys: [
+                (at: 0, turn: (x: 2000, y: 0, z: -3000)),
+                (at: 500, turn: (x: -2000, y: 0, z: -4000)),
+                (at: 1000, turn: (x: 2000, y: 0, z: -3000)),
+            ]),
+            (slot: "arm-r", keys: [
+                (at: 0, turn: (x: -2000, y: 0, z: 3000)),
+                (at: 500, turn: (x: 2000, y: 0, z: 4000)),
+                (at: 1000, turn: (x: -2000, y: 0, z: 3000)),
+            ]),
+        ],
+    ),
+    (
+        schema_version: 1,
+        id: "humanoid-walk",
+        name: "Humanoid walk",
+        timing: Stride(metres: 1600),
+        tracks: [
+            (slot: "leg-l", keys: [
+                (at: 0, turn: (x: 28000, y: 0, z: 0)),
+                (at: 500, turn: (x: -28000, y: 0, z: 0)),
+            ]),
+            (slot: "leg-r", keys: [
+                (at: 0, turn: (x: -28000, y: 0, z: 0)),
+                (at: 500, turn: (x: 28000, y: 0, z: 0)),
+            ]),
+            (slot: "arm-l", keys: [
+                (at: 0, turn: (x: -22000, y: 0, z: -3000)),
+                (at: 500, turn: (x: 22000, y: 0, z: -3000)),
+            ]),
+            (slot: "arm-r", keys: [
+                (at: 0, turn: (x: 22000, y: 0, z: 3000)),
+                (at: 500, turn: (x: -22000, y: 0, z: 3000)),
+            ]),
+            (slot: "torso", keys: [
+                (at: 0, turn: (x: 0, y: 4000, z: 0)),
+                (at: 250, turn: (x: 0, y: 0, z: 0), offset: (x: 0, y: 30, z: 0)),
+                (at: 500, turn: (x: 0, y: -4000, z: 0)),
+                (at: 750, turn: (x: 0, y: 0, z: 0), offset: (x: 0, y: 30, z: 0)),
+            ]),
+            (slot: "head", keys: [
+                (at: 0, turn: (x: 0, y: -3000, z: 0)),
+                (at: 500, turn: (x: 0, y: 3000, z: 0)),
+            ]),
+        ],
+    ),
+    // Hunched and dragging: short steps, arms hanging forward and swaying,
+    // the torso rolling side to side. The husks' walk, overriding the plan's.
+    (
+        schema_version: 1,
+        id: "husk-shamble",
+        name: "Husk shamble",
+        timing: Stride(metres: 1200),
+        tracks: [
+            (slot: "leg-l", keys: [
+                (at: 0, turn: (x: 18000, y: 0, z: 0)),
+                (at: 500, turn: (x: -14000, y: 0, z: 0)),
+            ]),
+            (slot: "leg-r", keys: [
+                (at: 0, turn: (x: -14000, y: 0, z: 0)),
+                (at: 500, turn: (x: 18000, y: 0, z: 0)),
+            ]),
+            (slot: "arm-l", keys: [
+                (at: 0, turn: (x: 30000, y: 0, z: -6000)),
+                (at: 500, turn: (x: 40000, y: 0, z: -2000)),
+            ]),
+            (slot: "arm-r", keys: [
+                (at: 0, turn: (x: 40000, y: 0, z: 2000)),
+                (at: 500, turn: (x: 30000, y: 0, z: 6000)),
+            ]),
+            (slot: "torso", keys: [
+                (at: 0, turn: (x: 0, y: 0, z: 6000)),
+                (at: 500, turn: (x: 0, y: 0, z: -6000)),
+            ]),
+            (slot: "head", keys: [
+                (at: 0, turn: (x: 0, y: 0, z: -5000)),
+                (at: 500, turn: (x: 0, y: 0, z: 5000)),
+            ]),
+        ],
+    ),
+    // An overhead chop: the weapon arm rises up and back through the wind-up,
+    // falls through the active window, and settles in recovery. The body turns
+    // into the blow and the lead leg steps.
+    (
+        schema_version: 1,
+        id: "humanoid-swing",
+        name: "Humanoid swing",
+        timing: Windows,
+        tracks: [
+            // The blade arm: lifted, cocked high behind the shoulder and held
+            // there, then brought through in a fast diagonal cut that carries
+            // on past the body before it settles.
+            (slot: "arm-r", keys: [
+                (at: 0, turn: (x: 0, y: 0, z: 0)),
+                (at: 450, turn: (x: 80000, y: 0, z: 22000)),
+                (at: 900, turn: (x: 160000, y: 0, z: 28000)),
+                (at: 1000, turn: (x: 165000, y: 0, z: 24000)),
+                (at: 1180, turn: (x: 60000, y: 0, z: -25000)),
+                (at: 1450, turn: (x: -12000, y: 0, z: -42000)),
+                (at: 2100, turn: (x: -4000, y: 0, z: -30000)),
+                (at: 2650, turn: (x: 8000, y: 0, z: -6000)),
+                (at: 3000, turn: (x: 0, y: 0, z: 0)),
+            ]),
+            // The off arm counterweights the blade: back as it coils, forward
+            // as it cuts.
+            (slot: "arm-l", keys: [
+                (at: 0, turn: (x: 0, y: 0, z: 0)),
+                (at: 900, turn: (x: -35000, y: 0, z: -15000)),
+                (at: 1200, turn: (x: 30000, y: 0, z: 6000)),
+                (at: 2000, turn: (x: 12000, y: 0, z: 0)),
+                (at: 3000, turn: (x: 0, y: 0, z: 0)),
+            ]),
+            // The body winds back, then turns through the cut.
+            (slot: "torso", keys: [
+                (at: 0, turn: (x: 0, y: 0, z: 0)),
+                (at: 900, turn: (x: -8000, y: 26000, z: 0)),
+                (at: 1000, turn: (x: -8000, y: 28000, z: 0)),
+                (at: 1220, turn: (x: 12000, y: -26000, z: 0)),
+                (at: 1700, turn: (x: 6000, y: -18000, z: 0)),
+                (at: 3000, turn: (x: 0, y: 0, z: 0)),
+            ]),
+            (slot: "head", keys: [
+                (at: 0, turn: (x: 0, y: 0, z: 0)),
+                (at: 900, turn: (x: 0, y: -12000, z: 0)),
+                (at: 1220, turn: (x: 6000, y: 12000, z: 0)),
+                (at: 3000, turn: (x: 0, y: 0, z: 0)),
+            ]),
+            // The lead leg steps into the blow, the back leg pushes.
+            (slot: "leg-l", keys: [
+                (at: 0, turn: (x: 0, y: 0, z: 0)),
+                (at: 900, turn: (x: 10000, y: 0, z: 0)),
+                (at: 1220, turn: (x: 30000, y: 0, z: 0)),
+                (at: 2200, turn: (x: 14000, y: 0, z: 0)),
+                (at: 3000, turn: (x: 0, y: 0, z: 0)),
+            ]),
+            (slot: "leg-r", keys: [
+                (at: 0, turn: (x: 0, y: 0, z: 0)),
+                (at: 900, turn: (x: -6000, y: 0, z: 0)),
+                (at: 1220, turn: (x: -20000, y: 0, z: 0)),
+                (at: 3000, turn: (x: 0, y: 0, z: 0)),
+            ]),
+        ],
+    ),
+    // Both hands rise forward through the wind-up and thrust up as the effect
+    // lands; the head tips back to watch it go.
+    (
+        schema_version: 1,
+        id: "humanoid-cast",
+        name: "Humanoid cast",
+        timing: Windows,
+        tracks: [
+            (slot: "arm-l", keys: [
+                (at: 0, turn: (x: 0, y: 0, z: 0)),
+                (at: 900, turn: (x: 70000, y: 0, z: 15000)),
+                (at: 1000, turn: (x: 105000, y: 0, z: 10000)),
+                (at: 1800, turn: (x: 95000, y: 0, z: 10000)),
+                (at: 3000, turn: (x: 0, y: 0, z: 0)),
+            ]),
+            (slot: "arm-r", keys: [
+                (at: 0, turn: (x: 0, y: 0, z: 0)),
+                (at: 900, turn: (x: 70000, y: 0, z: -15000)),
+                (at: 1000, turn: (x: 105000, y: 0, z: -10000)),
+                (at: 1800, turn: (x: 95000, y: 0, z: -10000)),
+                (at: 3000, turn: (x: 0, y: 0, z: 0)),
+            ]),
+            (slot: "head", keys: [
+                (at: 0, turn: (x: 0, y: 0, z: 0)),
+                (at: 1000, turn: (x: -15000, y: 0, z: 0)),
+                (at: 3000, turn: (x: 0, y: 0, z: 0)),
+            ]),
+        ],
+    ),
+    // Ember Cleave's own cast: the blade hand drawn high behind the head
+    // through the wind-up, brought down and across as the fire lands, the
+    // body twisting into it.
+    (
+        schema_version: 1,
+        id: "ember-cleave-cast",
+        name: "Ember Cleave cast",
+        timing: Windows,
+        tracks: [
+            (slot: "arm-r", keys: [
+                (at: 0, turn: (x: 0, y: 0, z: 0)),
+                (at: 900, turn: (x: 165000, y: 0, z: 25000)),
+                (at: 1000, turn: (x: 165000, y: 0, z: 25000)),
+                (at: 1300, turn: (x: 35000, y: 0, z: -35000)),
+                (at: 2000, turn: (x: 25000, y: 0, z: -30000)),
+                (at: 3000, turn: (x: 0, y: 0, z: 0)),
+            ]),
+            (slot: "arm-l", keys: [
+                (at: 0, turn: (x: 0, y: 0, z: 0)),
+                (at: 900, turn: (x: 40000, y: 0, z: -35000)),
+                (at: 1300, turn: (x: -20000, y: 0, z: -20000)),
+                (at: 3000, turn: (x: 0, y: 0, z: 0)),
+            ]),
+            (slot: "torso", keys: [
+                (at: 0, turn: (x: 0, y: 0, z: 0)),
+                (at: 900, turn: (x: -8000, y: 30000, z: 0)),
+                (at: 1300, turn: (x: 12000, y: -25000, z: 0)),
+                (at: 3000, turn: (x: 0, y: 0, z: 0)),
+            ]),
+            (slot: "head", keys: [
+                (at: 0, turn: (x: 0, y: 0, z: 0)),
+                (at: 900, turn: (x: -10000, y: -15000, z: 0)),
+                (at: 1300, turn: (x: 8000, y: 10000, z: 0)),
+                (at: 3000, turn: (x: 0, y: 0, z: 0)),
+            ]),
+            (slot: "leg-l", keys: [
+                (at: 0, turn: (x: 0, y: 0, z: 0)),
+                (at: 1300, turn: (x: 30000, y: 0, z: 0)),
+                (at: 3000, turn: (x: 0, y: 0, z: 0)),
+            ]),
+            (slot: "leg-r", keys: [
+                (at: 0, turn: (x: 0, y: 0, z: 0)),
+                (at: 1300, turn: (x: -20000, y: 0, z: 0)),
+                (at: 3000, turn: (x: 0, y: 0, z: 0)),
+            ]),
+        ],
+    ),
+    // Warden's Guard: forearms crossed before the chest and the stance
+    // widened, held through the active window.
+    (
+        schema_version: 1,
+        id: "guard-brace",
+        name: "Guard brace",
+        timing: Windows,
+        tracks: [
+            (slot: "arm-l", keys: [
+                (at: 0, turn: (x: 0, y: 0, z: 0)),
+                (at: 1000, turn: (x: 85000, y: 0, z: -40000)),
+                (at: 2000, turn: (x: 85000, y: 0, z: -40000)),
+                (at: 3000, turn: (x: 0, y: 0, z: 0)),
+            ]),
+            (slot: "arm-r", keys: [
+                (at: 0, turn: (x: 0, y: 0, z: 0)),
+                (at: 1000, turn: (x: 85000, y: 0, z: 40000)),
+                (at: 2000, turn: (x: 85000, y: 0, z: 40000)),
+                (at: 3000, turn: (x: 0, y: 0, z: 0)),
+            ]),
+            (slot: "leg-l", keys: [
+                (at: 0, turn: (x: 0, y: 0, z: 0)),
+                (at: 1000, turn: (x: 0, y: 0, z: -12000)),
+                (at: 2000, turn: (x: 0, y: 0, z: -12000)),
+                (at: 3000, turn: (x: 0, y: 0, z: 0)),
+            ]),
+            (slot: "leg-r", keys: [
+                (at: 0, turn: (x: 0, y: 0, z: 0)),
+                (at: 1000, turn: (x: 0, y: 0, z: 12000)),
+                (at: 2000, turn: (x: 0, y: 0, z: 12000)),
+                (at: 3000, turn: (x: 0, y: 0, z: 0)),
+            ]),
+            (slot: "head", keys: [
+                (at: 0, turn: (x: 0, y: 0, z: 0)),
+                (at: 1000, turn: (x: 10000, y: 0, z: 0)),
+                (at: 3000, turn: (x: 0, y: 0, z: 0)),
+            ]),
+        ],
+    ),
+    // Ember Bolt: the throwing hand drawn back past the hip through the
+    // wind-up and flung forward as the bolt leaves, the body turning into it.
+    (
+        schema_version: 1,
+        id: "bolt-throw",
+        name: "Bolt throw",
+        timing: Windows,
+        tracks: [
+            (slot: "arm-r", keys: [
+                (at: 0, turn: (x: 0, y: 0, z: 0)),
+                (at: 900, turn: (x: -55000, y: 0, z: 15000)),
+                (at: 1000, turn: (x: -55000, y: 0, z: 15000)),
+                (at: 1250, turn: (x: 95000, y: 0, z: -5000)),
+                (at: 2000, turn: (x: 80000, y: 0, z: 0)),
+                (at: 3000, turn: (x: 0, y: 0, z: 0)),
+            ]),
+            (slot: "arm-l", keys: [
+                (at: 0, turn: (x: 0, y: 0, z: 0)),
+                (at: 900, turn: (x: 45000, y: 0, z: -10000)),
+                (at: 1250, turn: (x: -20000, y: 0, z: 0)),
+                (at: 3000, turn: (x: 0, y: 0, z: 0)),
+            ]),
+            (slot: "torso", keys: [
+                (at: 0, turn: (x: 0, y: 0, z: 0)),
+                (at: 900, turn: (x: 0, y: 25000, z: 0)),
+                (at: 1250, turn: (x: 8000, y: -20000, z: 0)),
+                (at: 3000, turn: (x: 0, y: 0, z: 0)),
+            ]),
+            (slot: "leg-l", keys: [
+                (at: 0, turn: (x: 0, y: 0, z: 0)),
+                (at: 1250, turn: (x: 22000, y: 0, z: 0)),
+                (at: 3000, turn: (x: 0, y: 0, z: 0)),
+            ]),
+        ],
+    ),
+    // A husk's rake: both arms hauled up and back through the wind-up, then
+    // dragged down across the target together, the body hunching into it.
+    (
+        schema_version: 1,
+        id: "husk-claw",
+        name: "Husk claw",
+        timing: Windows,
+        tracks: [
+            (slot: "arm-l", keys: [
+                (at: 0, turn: (x: 0, y: 0, z: 0)),
+                (at: 900, turn: (x: 120000, y: 0, z: -30000)),
+                (at: 1000, turn: (x: 125000, y: 0, z: -28000)),
+                (at: 1250, turn: (x: -15000, y: 0, z: 15000)),
+                (at: 2200, turn: (x: -5000, y: 0, z: 8000)),
+                (at: 3000, turn: (x: 0, y: 0, z: 0)),
+            ]),
+            (slot: "arm-r", keys: [
+                (at: 0, turn: (x: 0, y: 0, z: 0)),
+                (at: 900, turn: (x: 120000, y: 0, z: 30000)),
+                (at: 1000, turn: (x: 125000, y: 0, z: 28000)),
+                (at: 1250, turn: (x: -15000, y: 0, z: -15000)),
+                (at: 2200, turn: (x: -5000, y: 0, z: -8000)),
+                (at: 3000, turn: (x: 0, y: 0, z: 0)),
+            ]),
+            (slot: "torso", keys: [
+                (at: 0, turn: (x: 0, y: 0, z: 0)),
+                (at: 900, turn: (x: -12000, y: 0, z: 0)),
+                (at: 1250, turn: (x: 24000, y: 0, z: 0)),
+                (at: 2200, turn: (x: 10000, y: 0, z: 0)),
+                (at: 3000, turn: (x: 0, y: 0, z: 0)),
+            ]),
+            (slot: "head", keys: [
+                (at: 0, turn: (x: 0, y: 0, z: 0)),
+                (at: 900, turn: (x: -15000, y: 0, z: 0)),
+                (at: 1250, turn: (x: 15000, y: 0, z: 0)),
+                (at: 3000, turn: (x: 0, y: 0, z: 0)),
+            ]),
+        ],
+    ),
+    // Tucked through the roll, so it reads as a body going over rather than a
+    // stiff figure spinning.
+    (
+        schema_version: 1,
+        id: "humanoid-dodge",
+        name: "Humanoid dodge",
+        timing: Span,
+        tracks: [
+            (slot: "leg-l", keys: [
+                (at: 0, turn: (x: 0, y: 0, z: 0)),
+                (at: 250, turn: (x: 75000, y: 0, z: 0)),
+                (at: 750, turn: (x: 75000, y: 0, z: 0)),
+                (at: 1000, turn: (x: 0, y: 0, z: 0)),
+            ]),
+            (slot: "leg-r", keys: [
+                (at: 0, turn: (x: 0, y: 0, z: 0)),
+                (at: 250, turn: (x: 70000, y: 0, z: 0)),
+                (at: 750, turn: (x: 70000, y: 0, z: 0)),
+                (at: 1000, turn: (x: 0, y: 0, z: 0)),
+            ]),
+            (slot: "arm-l", keys: [
+                (at: 0, turn: (x: 0, y: 0, z: 0)),
+                (at: 250, turn: (x: 60000, y: 0, z: 0)),
+                (at: 750, turn: (x: 60000, y: 0, z: 0)),
+                (at: 1000, turn: (x: 0, y: 0, z: 0)),
+            ]),
+            (slot: "arm-r", keys: [
+                (at: 0, turn: (x: 0, y: 0, z: 0)),
+                (at: 250, turn: (x: 60000, y: 0, z: 0)),
+                (at: 750, turn: (x: 60000, y: 0, z: 0)),
+                (at: 1000, turn: (x: 0, y: 0, z: 0)),
+            ]),
+            (slot: "head", keys: [
+                (at: 0, turn: (x: 0, y: 0, z: 0)),
+                (at: 250, turn: (x: 30000, y: 0, z: 0)),
+                (at: 750, turn: (x: 30000, y: 0, z: 0)),
+                (at: 1000, turn: (x: 0, y: 0, z: 0)),
+            ]),
+        ],
+    ),
+]

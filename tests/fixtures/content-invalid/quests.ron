@@ -1,0 +1,28 @@
+// A deliberately broken content set, used to prove the validator catches
+// cross-file problems and names both ends of a dangling reference.
+//
+// `ghost-quest` is structurally fine — its graph reaches a completion — but it
+// requires an encounter and a reward item that no file defines. Only a loader
+// that has seen every family can notice.
+[
+    (
+        schema_version: 1,
+        id: "ghost-quest",
+        title: "The Quest That Cannot Be Finished",
+        start: "fight-nothing",
+        nodes: {
+            "fight-nothing": (
+                objective: Defeat(encounter: "no-such-encounter"),
+                next: [],
+                resolution: Some("impossible"),
+            ),
+        },
+        rewards: (
+            items: {
+                "no-such-item": 1,
+            },
+            experience: 10,
+            reputation: {},
+        ),
+    ),
+]

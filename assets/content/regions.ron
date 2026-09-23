@@ -1,0 +1,16 @@
+// The world's regions (M9): what the player reads on arriving, and what kind
+// of land each is. Every location's `region` must name one of these.
+[
+    (
+        schema_version: 1,
+        id: "cinderwake",
+        name: "Cinderwake",
+        biome: Settlement,
+    ),
+    (
+        schema_version: 1,
+        id: "ashfall-waste",
+        name: "Ashfall Waste",
+        biome: Wasteland,
+    ),
+]

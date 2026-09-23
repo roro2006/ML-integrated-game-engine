@@ -1,0 +1,47 @@
+(
+    format_version: 1,
+    engine_version: "0.1.0",
+    content_revision: "rev-0001",
+    content_hash: "0707070707070707070707070707070707070707070707070707070707070707",
+    provenance: [],
+    world: (
+        schema_version: 1,
+        world_seed: 3252559910,
+        content_revision: "rev-0001",
+        clock: (
+            tick: 0,
+        ),
+        player: (
+            health: (
+                current: 0,
+                max: 0,
+            ),
+            stamina: (
+                current: 0,
+                max: 0,
+            ),
+            location: None,
+            inventory: {
+                "ember-ore": 4,
+            },
+            equipment: {},
+            progression: (
+                class: None,
+                level: 0,
+                experience: 0,
+            ),
+        ),
+        regions: {},
+        npcs: {},
+        factions: {},
+        quests: {
+            "still-waters": (
+                status: Active,
+                objectives: {},
+            ),
+        },
+        world_flags: [
+            "prologue-complete",
+        ],
+    ),
+)

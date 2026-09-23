@@ -1,0 +1,10 @@
+// Fixture `nothing-to-say` (M9 wave 1): the npc to talk to is placed but has no conversation.
+[
+    (
+        schema_version: 1,
+        id: "cellar-moss",
+        name: "Cellar Moss",
+        category: Material,
+        stack_limit: 20,
+    ),
+]

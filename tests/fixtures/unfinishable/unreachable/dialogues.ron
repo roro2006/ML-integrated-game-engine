@@ -1,0 +1,22 @@
+// Fixture `unreachable` (M9 wave 1): no door leads down to the cellar.
+[
+    (
+        schema_version: 1,
+        id: "keeper-talk",
+        speaker: "hall-keeper",
+        start: "hello",
+        nodes: {
+            "hello": (
+                text: "The cellar needs seeing to.",
+                options: [
+                    (
+                        text: "I'll go.",
+                        conditions: [],
+                        effects: [StartQuest("cellar-errand")],
+                        next: None,
+                    ),
+                ],
+            ),
+        },
+    ),
+]

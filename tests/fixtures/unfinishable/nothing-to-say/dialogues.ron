@@ -1,0 +1,22 @@
+// Fixture `nothing-to-say` (M9 wave 1): the npc to talk to is placed but has no conversation.
+[
+    (
+        schema_version: 1,
+        id: "keeper-talk",
+        speaker: "hall-keeper",
+        start: "hello",
+        nodes: {
+            "hello": (
+                text: "The cellar needs seeing to.",
+                options: [
+                    (
+                        text: "I'll go.",
+                        conditions: [],
+                        effects: [StartQuest("cellar-errand")],
+                        next: None,
+                    ),
+                ],
+            ),
+        },
+    ),
+]

@@ -1,0 +1,22 @@
+// Fixture `choice-not-offered` (M9 wave 1): no marker settles the choice and no conversation offers it.
+[
+    (
+        schema_version: 1,
+        id: "keeper-talk",
+        speaker: "hall-keeper",
+        start: "hello",
+        nodes: {
+            "hello": (
+                text: "The cellar needs seeing to.",
+                options: [
+                    (
+                        text: "I'll go.",
+                        conditions: [],
+                        effects: [StartQuest("cellar-errand")],
+                        next: None,
+                    ),
+                ],
+            ),
+        },
+    ),
+]

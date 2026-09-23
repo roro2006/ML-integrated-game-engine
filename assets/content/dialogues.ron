@@ -1,0 +1,134 @@
+// Warden Sela's conversation: it starts the slice's quest, gates a hand-in on
+// what the player is actually carrying, and always offers a way out.
+//
+// Conditions and effects are allowlisted enums, never expressions. That is what
+// will later let a model propose dialogue safely (ADR-0010): the worst a bad
+// proposal can do is name something that does not exist, which the loader
+// catches.
+[
+    (
+        schema_version: 1,
+        id: "sela-greeting",
+        speaker: "warden-sela",
+        start: "greeting",
+        nodes: {
+            "greeting": (
+                text: "The intake's fouled again. Third time since the collapse.",
+                options: [
+                    (
+                        text: "I'll look into it.",
+                        conditions: [QuestNotStarted("still-waters")],
+                        effects: [StartQuest("still-waters")],
+                        next: Some("thanks"),
+                    ),
+                    (
+                        text: "I brought the reeds.",
+                        conditions: [
+                            QuestActive("still-waters"),
+                            HasItem(item: "still-reed", quantity: 2),
+                        ],
+                        effects: [
+                            TakeItem(item: "still-reed", quantity: 2),
+                            AdjustReputation(faction: "cinderwake-settlers", delta: 5),
+                            GrantItem(item: "clearwater-draught", quantity: 1),
+                        ],
+                        next: Some("thanks"),
+                    ),
+                    // Order matters here, and not only for reading. The runtime
+                    // stands in for the player by taking the *first available*
+                    // option, so a gated offer placed after the ungated "Not
+                    // now." would never be reachable. New offers go above it.
+                    (
+                        text: "The waste is quiet. What now?",
+                        conditions: [
+                            QuestCompleted("still-waters"),
+                            QuestNotStarted("ember-and-ash"),
+                        ],
+                        effects: [StartQuest("ember-and-ash")],
+                        next: Some("the-crypt"),
+                    ),
+                    (
+                        text: "Not now.",
+                        conditions: [],
+                        effects: [],
+                        next: None,
+                    ),
+                ],
+            ),
+            // Where the second quest is actually explained. A quest handed over
+            // without a line of context is a waypoint, not a story.
+            "the-crypt": (
+                text: "Quiet is the wrong word. It came from the crypt, and something in there is still breathing.",
+                options: [
+                    (
+                        text: "Then I'll stop it breathing.",
+                        conditions: [],
+                        effects: [],
+                        next: None,
+                    ),
+                ],
+            ),
+            "thanks": (
+                text: "Then the settlement owes you one. Mind the waste — it bites.",
+                options: [
+                    (
+                        text: "I'll be careful.",
+                        conditions: [],
+                        effects: [],
+                        next: None,
+                    ),
+                ],
+            ),
+        },
+    ),
+    (
+        schema_version: 1,
+        id: "thal-terms",
+        speaker: "arbiter-thal",
+        start: "terms",
+        nodes: {
+            "terms": (
+                text: "The old forest does not grant passage for asking.",
+                options: [
+                    (
+                        text: "What would it take?",
+                        conditions: [],
+                        effects: [],
+                        next: Some("price"),
+                    ),
+                    (
+                        text: "Then I'll go around.",
+                        conditions: [],
+                        effects: [],
+                        next: None,
+                    ),
+                ],
+            ),
+            "price": (
+                text: "Bark, honestly taken. Bring eight and we will talk.",
+                options: [
+                    (
+                        text: "Agreed.",
+                        conditions: [HasItem(item: "old-forest-bark", quantity: 8)],
+                        effects: [
+                            TakeItem(item: "old-forest-bark", quantity: 8),
+                            SetWorldFlag("order-passage-granted"),
+                            AdjustReputation(faction: "old-forest-order", delta: 10),
+                            // Agreeing terms with the order *is* the decision.
+                            // The same choice can also be settled at the marker
+                            // in the lane; whichever comes first wins.
+                            MakeChoice("choice-water-rights"),
+                        ],
+                        next: None,
+                    ),
+                    (
+                        text: "I'll return when I have them.",
+                        conditions: [],
+                        effects: [],
+                        next: None,
+                    ),
+                ],
+            ),
+        },
+    ),
+]

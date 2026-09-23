@@ -1,0 +1,274 @@
+// Models: low-poly recipes of parametric shapes (ADR-0017).
+//
+// Every part is a shape from the approved set — Box, Wedge, Cylinder, Cone,
+// Frustum, Sphere, Taper, Dome — hung from a slot of its body plan and painted
+// from its palette. Lengths are milli-metres; `at` is measured from the slot's
+// pivot; `turn` is milli-degrees about X, then Y, then Z; `stretch` scales the
+// shape per axis before it is turned (1000 is unstretched). `top` and `bottom`
+// repaint faces within about 45 degrees of straight up or down.
+//
+// The silhouette language is Old School RuneScape's: trapezoid torsos wide at
+// the chest and narrow at the waist, limbs that taper to wrist and ankle,
+// flared boots and skirts, domed pauldrons and helmets, jagged hems, spikes.
+// Tapers and domes carry most of it; stretch turns a sphere into a head and a
+// dome into a shoulder plate.
+//
+// No vertex data appears anywhere, which is what lets validation bound a model
+// and an AI propose one (ADR-0010). Budgets: 24 parts, 1500 triangles.
+[
+    // The player: warm tunic under a leather harness, a cloak with a ragged
+    // hem, and a tapered blade carried in the right hand so it swings with
+    // the arm.
+    (
+        schema_version: 1,
+        id: "wayfinder",
+        name: "Wayfinder",
+        body_plan: "humanoid",
+        palette: "cinderwake",
+        parts: [
+            (slot: "torso", shape: Taper(x: 360, z: 230, top_x: 520, top_z: 300, height: 540), at: (x: 0, y: 290, z: 0), color: "tunic"),
+            (slot: "torso", shape: Taper(x: 370, z: 240, top_x: 360, top_z: 235, height: 80), at: (x: 0, y: 20, z: 0), color: "leather"),
+            (slot: "torso", shape: Taper(x: 440, z: 300, top_x: 370, top_z: 245, height: 260), at: (x: 0, y: -150, z: 0), color: "cloak"),
+            (slot: "torso", shape: Frustum(bottom: 190, top: 150, height: 80, sides: 6), at: (x: 0, y: 590, z: 0), color: "cloak"),
+            (slot: "torso", shape: Taper(x: 460, z: 50, top_x: 420, top_z: 40, height: 820), at: (x: 0, y: 170, z: 190), turn: (x: 6000, y: 0, z: 0), color: "cloak"),
+            (slot: "torso", shape: Taper(x: 140, z: 40, top_x: 0, top_z: 0, height: 130), at: (x: -120, y: -270, z: 205), turn: (x: 180000, y: 0, z: 0), color: "cloak"),
+            (slot: "torso", shape: Taper(x: 140, z: 40, top_x: 0, top_z: 0, height: 130), at: (x: 120, y: -270, z: 205), turn: (x: 180000, y: 0, z: 0), color: "cloak"),
+            (slot: "head", shape: Taper(x: 230, z: 240, top_x: 250, top_z: 250, height: 270), at: (x: 0, y: 190, z: 0), color: "skin"),
+            (slot: "head", shape: Dome(radius: 150, segments: 8, rings: 2), at: (x: 0, y: 350, z: 10), stretch: (x: 1000, y: 700, z: 1050), color: "hair"),
+            (slot: "head", shape: Taper(x: 250, z: 90, top_x: 260, top_z: 80, height: 220), at: (x: 0, y: 210, z: 120), color: "hair"),
+            (slot: "head", shape: Wedge(x: 50, y: 70, z: 60), at: (x: 0, y: 170, z: -150), color: "skin-dark"),
+            (slot: "arm-l", shape: Dome(radius: 150, segments: 6, rings: 2), at: (x: 0, y: 10, z: 0), stretch: (x: 1100, y: 800, z: 1000), color: "leather"),
+            (slot: "arm-l", shape: Taper(x: 110, z: 110, top_x: 150, top_z: 150, height: 440), at: (x: 0, y: -220, z: 0), color: "tunic"),
+            (slot: "arm-l", shape: Box(x: 110, y: 130, z: 120), at: (x: 0, y: -500, z: 0), color: "skin"),
+            (slot: "arm-r", shape: Dome(radius: 150, segments: 6, rings: 2), at: (x: 0, y: 10, z: 0), stretch: (x: 1100, y: 800, z: 1000), color: "leather"),
+            (slot: "arm-r", shape: Taper(x: 110, z: 110, top_x: 150, top_z: 150, height: 440), at: (x: 0, y: -220, z: 0), color: "tunic"),
+            (slot: "arm-r", shape: Box(x: 110, y: 130, z: 120), at: (x: 0, y: -500, z: 0), color: "skin"),
+            (slot: "arm-r", shape: Cylinder(radius: 25, height: 180, sides: 6), at: (x: 0, y: -500, z: -20), turn: (x: 90000, y: 0, z: 0), color: "leather"),
+            (slot: "arm-r", shape: Box(x: 180, y: 40, z: 40), at: (x: 0, y: -500, z: -110), color: "steel-dark"),
+            (slot: "arm-r", shape: Taper(x: 60, z: 25, top_x: 10, top_z: 10, height: 620), at: (x: 0, y: -500, z: -420), turn: (x: -90000, y: 0, z: 0), color: "steel"),
+            (slot: "leg-l", shape: Taper(x: 130, z: 150, top_x: 190, top_z: 200, height: 780), at: (x: 0, y: -440, z: 0), color: "trousers"),
+            (slot: "leg-l", shape: Taper(x: 190, z: 300, top_x: 150, top_z: 190, height: 170), at: (x: 0, y: -865, z: -40), color: "boot"),
+            (slot: "leg-r", shape: Taper(x: 130, z: 150, top_x: 190, top_z: 200, height: 780), at: (x: 0, y: -440, z: 0), color: "trousers"),
+            (slot: "leg-r", shape: Taper(x: 190, z: 300, top_x: 150, top_z: 190, height: 170), at: (x: 0, y: -865, z: -40), color: "boot"),
+        ],
+    ),
+    // Hunched and spined: a torso tipped forward, bone spikes down the back,
+    // corruption swelling from one shoulder, and claws that taper to points.
+    (
+        schema_version: 1,
+        id: "corrupted-husk",
+        name: "Corrupted Husk",
+        body_plan: "humanoid",
+        palette: "cinderwake",
+        parts: [
+            (slot: "torso", shape: Taper(x: 380, z: 260, top_x: 520, top_z: 340, height: 520), at: (x: 0, y: 260, z: -60), turn: (x: -22000, y: 0, z: 0), color: "ash", top: Some("ash-dark")),
+            (slot: "torso", shape: Taper(x: 90, z: 90, top_x: 0, top_z: 0, height: 220), at: (x: 0, y: 470, z: 150), turn: (x: 30000, y: 0, z: 0), color: "bone"),
+            (slot: "torso", shape: Taper(x: 80, z: 80, top_x: 0, top_z: 0, height: 180), at: (x: -120, y: 380, z: 170), turn: (x: 35000, y: 0, z: 20000), color: "bone"),
+            (slot: "torso", shape: Dome(radius: 180, segments: 7, rings: 2), at: (x: 130, y: 420, z: 90), turn: (x: 30000, y: 0, z: 0), color: "corruption"),
+            (slot: "torso", shape: Sphere(radius: 90, detail: 0), at: (x: -150, y: 220, z: 120), color: "corruption-glow"),
+            (slot: "torso", shape: Taper(x: 400, z: 280, top_x: 390, top_z: 270, height: 60), at: (x: 0, y: 150, z: -40), color: "bone"),
+            (slot: "torso", shape: Taper(x: 360, z: 260, top_x: 330, top_z: 240, height: 200), at: (x: 0, y: -100, z: 0), color: "ash-dark"),
+            (slot: "head", shape: Taper(x: 230, z: 260, top_x: 250, top_z: 240, height: 250), at: (x: 0, y: 110, z: -130), color: "ash"),
+            (slot: "head", shape: Wedge(x: 220, y: 100, z: 200), at: (x: 0, y: -20, z: -170), color: "ash-dark"),
+            (slot: "head", shape: Box(x: 50, y: 40, z: 30), at: (x: -60, y: 140, z: -265), color: "corruption-glow"),
+            (slot: "head", shape: Box(x: 50, y: 40, z: 30), at: (x: 60, y: 140, z: -265), color: "corruption-glow"),
+            (slot: "head", shape: Taper(x: 80, z: 80, top_x: 0, top_z: 0, height: 200), at: (x: 0, y: 300, z: -120), turn: (x: -25000, y: 0, z: 0), color: "bone"),
+            (slot: "arm-l", shape: Dome(radius: 120, segments: 6, rings: 2), at: (x: 0, y: 10, z: 0), color: "ash-dark"),
+            (slot: "arm-l", shape: Taper(x: 90, z: 100, top_x: 140, top_z: 150, height: 600), at: (x: 0, y: -290, z: -40), color: "ash"),
+            (slot: "arm-l", shape: Taper(x: 120, z: 60, top_x: 0, top_z: 0, height: 180), at: (x: 0, y: -680, z: -60), turn: (x: 180000, y: 0, z: 0), color: "bone"),
+            (slot: "arm-r", shape: Dome(radius: 120, segments: 6, rings: 2), at: (x: 0, y: 10, z: 0), color: "ash-dark"),
+            (slot: "arm-r", shape: Taper(x: 90, z: 100, top_x: 140, top_z: 150, height: 600), at: (x: 0, y: -290, z: -40), color: "ash"),
+            (slot: "arm-r", shape: Taper(x: 120, z: 60, top_x: 0, top_z: 0, height: 180), at: (x: 0, y: -680, z: -60), turn: (x: 180000, y: 0, z: 0), color: "bone"),
+            (slot: "leg-l", shape: Taper(x: 120, z: 140, top_x: 180, top_z: 190, height: 800), at: (x: 0, y: -450, z: 0), color: "ash-dark"),
+            (slot: "leg-l", shape: Taper(x: 170, z: 260, top_x: 130, top_z: 160, height: 100), at: (x: 0, y: -900, z: -40), color: "ash-dark"),
+            (slot: "leg-r", shape: Taper(x: 120, z: 140, top_x: 180, top_z: 190, height: 800), at: (x: 0, y: -450, z: 0), color: "ash-dark"),
+            (slot: "leg-r", shape: Taper(x: 170, z: 260, top_x: 130, top_z: 160, height: 100), at: (x: 0, y: -900, z: -40), color: "ash-dark"),
+        ],
+        // Husks shamble where a wayfinder walks; everything else comes from
+        // the body plan.
+        animations: (walk: Some("husk-shamble"), swing: Some("husk-claw")),
+    ),
+    // Bloated with resin: an oval belly, sacs swelling on the back, and a maw
+    // that flares toward you. Smaller than a husk, so it reads as a different
+    // threat at a glance.
+    (
+        schema_version: 1,
+        id: "resin-spitter",
+        name: "Resin Spitter",
+        body_plan: "humanoid",
+        palette: "cinderwake",
+        scale: 900,
+        parts: [
+            (slot: "torso", shape: Sphere(radius: 330, detail: 1), at: (x: 0, y: 230, z: 0), stretch: (x: 1000, y: 900, z: 1100), color: "corruption"),
+            (slot: "torso", shape: Dome(radius: 170, segments: 7, rings: 2), at: (x: 0, y: 440, z: 190), turn: (x: 40000, y: 0, z: 0), color: "resin"),
+            (slot: "torso", shape: Sphere(radius: 110, detail: 0), at: (x: 210, y: 300, z: 130), color: "resin"),
+            (slot: "torso", shape: Sphere(radius: 90, detail: 0), at: (x: -200, y: 380, z: 110), color: "resin"),
+            (slot: "head", shape: Sphere(radius: 150, detail: 0), at: (x: 0, y: 80, z: -90), stretch: (x: 1000, y: 850, z: 1150), color: "ash"),
+            (slot: "head", shape: Frustum(bottom: 60, top: 95, height: 140, sides: 6), at: (x: 0, y: 50, z: -250), turn: (x: -90000, y: 0, z: 0), color: "resin"),
+            (slot: "arm-l", shape: Taper(x: 70, z: 70, top_x: 100, top_z: 100, height: 480), at: (x: 0, y: -230, z: 0), color: "ash-dark"),
+            (slot: "arm-r", shape: Taper(x: 70, z: 70, top_x: 100, top_z: 100, height: 480), at: (x: 0, y: -230, z: 0), color: "ash-dark"),
+            (slot: "leg-l", shape: Taper(x: 110, z: 120, top_x: 170, top_z: 180, height: 790), at: (x: 0, y: -445, z: 0), color: "ash-dark"),
+            (slot: "leg-l", shape: Taper(x: 170, z: 240, top_x: 130, top_z: 160, height: 110), at: (x: 0, y: -895, z: -30), color: "ash-dark"),
+            (slot: "leg-r", shape: Taper(x: 110, z: 120, top_x: 170, top_z: 180, height: 790), at: (x: 0, y: -445, z: 0), color: "ash-dark"),
+            (slot: "leg-r", shape: Taper(x: 170, z: 240, top_x: 130, top_z: 160, height: 110), at: (x: 0, y: -895, z: -30), color: "ash-dark"),
+        ],
+    ),
+    // The old forest standing up: a trunk that widens toward the shoulders
+    // under a mantle of moss, antlers of dead wood, a slit of light for eyes,
+    // leaves on the shoulders, and a club that thickens to its head.
+    (
+        schema_version: 1,
+        id: "bark-warden",
+        name: "Bark Warden",
+        body_plan: "humanoid",
+        palette: "cinderwake",
+        scale: 1150,
+        parts: [
+            (slot: "torso", shape: Frustum(bottom: 230, top: 300, height: 640, sides: 7), at: (x: 0, y: 300, z: 0), color: "bark", top: Some("moss")),
+            (slot: "torso", shape: Dome(radius: 330, segments: 7, rings: 2), at: (x: 0, y: 660, z: 0), stretch: (x: 1000, y: 600, z: 1000), color: "moss"),
+            (slot: "torso", shape: Frustum(bottom: 300, top: 230, height: 140, sides: 7), at: (x: 0, y: -10, z: 0), color: "bark-dark"),
+            (slot: "torso", shape: Taper(x: 90, z: 90, top_x: 0, top_z: 0, height: 240), at: (x: -200, y: 400, z: 150), turn: (x: 40000, y: 0, z: 0), color: "bark-dark"),
+            (slot: "torso", shape: Taper(x: 90, z: 90, top_x: 0, top_z: 0, height: 240), at: (x: 200, y: 400, z: 150), turn: (x: 40000, y: 0, z: 0), color: "bark-dark"),
+            (slot: "head", shape: Taper(x: 280, z: 260, top_x: 320, top_z: 280, height: 320), at: (x: 0, y: 170, z: 0), color: "bark", top: Some("moss")),
+            (slot: "head", shape: Box(x: 200, y: 40, z: 30), at: (x: 0, y: 180, z: -150), color: "eye"),
+            (slot: "head", shape: Dome(radius: 170, segments: 7, rings: 2), at: (x: 0, y: 360, z: 0), color: "leaf"),
+            (slot: "head", shape: Taper(x: 70, z: 70, top_x: 0, top_z: 0, height: 360), at: (x: -140, y: 440, z: 0), turn: (x: 0, y: 0, z: 25000), color: "bark-dark"),
+            (slot: "head", shape: Taper(x: 70, z: 70, top_x: 0, top_z: 0, height: 360), at: (x: 140, y: 440, z: 0), turn: (x: 0, y: 0, z: -25000), color: "bark-dark"),
+            (slot: "arm-l", shape: Dome(radius: 150, segments: 6, rings: 2), at: (x: 0, y: 20, z: 0), color: "leaf"),
+            (slot: "arm-l", shape: Frustum(bottom: 80, top: 110, height: 620, sides: 6), at: (x: 0, y: -300, z: 0), color: "bark"),
+            (slot: "arm-r", shape: Dome(radius: 150, segments: 6, rings: 2), at: (x: 0, y: 20, z: 0), color: "leaf"),
+            (slot: "arm-r", shape: Frustum(bottom: 80, top: 110, height: 620, sides: 6), at: (x: 0, y: -300, z: 0), color: "bark"),
+            (slot: "arm-r", shape: Frustum(bottom: 90, top: 170, height: 640, sides: 6), at: (x: 0, y: -600, z: -300), turn: (x: -90000, y: 0, z: 0), color: "bark-dark"),
+            (slot: "leg-l", shape: Frustum(bottom: 100, top: 130, height: 820, sides: 6), at: (x: 0, y: -440, z: 0), color: "bark-dark"),
+            (slot: "leg-l", shape: Taper(x: 240, z: 300, top_x: 170, top_z: 200, height: 130), at: (x: 0, y: -885, z: -40), color: "bark-dark"),
+            (slot: "leg-r", shape: Frustum(bottom: 100, top: 130, height: 820, sides: 6), at: (x: 0, y: -440, z: 0), color: "bark-dark"),
+            (slot: "leg-r", shape: Taper(x: 240, z: 300, top_x: 170, top_z: 200, height: 130), at: (x: 0, y: -885, z: -40), color: "bark-dark"),
+        ],
+    ),
+    // The elite: a husk made large, crowned in bone spikes, with bone
+    // pauldrons, an ember burning in its chest, and a cleaver in its hand — a
+    // `variant_of` in content and visibly a variant of the same creature.
+    (
+        schema_version: 1,
+        id: "husk-ashlord",
+        name: "Husk Ashlord",
+        body_plan: "humanoid",
+        palette: "cinderwake",
+        scale: 1450,
+        parts: [
+            (slot: "torso", shape: Taper(x: 380, z: 260, top_x: 520, top_z: 340, height: 520), at: (x: 0, y: 260, z: -60), turn: (x: -22000, y: 0, z: 0), color: "ash", top: Some("ash-dark")),
+            (slot: "torso", shape: Taper(x: 90, z: 90, top_x: 0, top_z: 0, height: 260), at: (x: 0, y: 480, z: 150), turn: (x: 30000, y: 0, z: 0), color: "bone"),
+            (slot: "torso", shape: Sphere(radius: 120, detail: 0), at: (x: 0, y: 330, z: -210), color: "ember"),
+            (slot: "torso", shape: Taper(x: 400, z: 280, top_x: 390, top_z: 270, height: 60), at: (x: 0, y: 150, z: -40), color: "bone"),
+            (slot: "torso", shape: Dome(radius: 180, segments: 7, rings: 2), at: (x: 130, y: 420, z: 90), turn: (x: 30000, y: 0, z: 0), color: "corruption"),
+            (slot: "head", shape: Taper(x: 230, z: 260, top_x: 250, top_z: 240, height: 250), at: (x: 0, y: 110, z: -130), color: "ash"),
+            (slot: "head", shape: Wedge(x: 220, y: 100, z: 200), at: (x: 0, y: -20, z: -170), color: "ash-dark"),
+            (slot: "head", shape: Box(x: 170, y: 40, z: 30), at: (x: 0, y: 140, z: -265), color: "ember"),
+            (slot: "head", shape: Taper(x: 70, z: 70, top_x: 0, top_z: 0, height: 240), at: (x: -90, y: 300, z: -120), color: "bone"),
+            (slot: "head", shape: Taper(x: 70, z: 70, top_x: 0, top_z: 0, height: 290), at: (x: 0, y: 320, z: -120), color: "bone"),
+            (slot: "head", shape: Taper(x: 70, z: 70, top_x: 0, top_z: 0, height: 240), at: (x: 90, y: 300, z: -120), color: "bone"),
+            (slot: "arm-l", shape: Dome(radius: 170, segments: 6, rings: 2), at: (x: 0, y: 20, z: 0), stretch: (x: 1150, y: 800, z: 1050), color: "bone"),
+            (slot: "arm-l", shape: Taper(x: 90, z: 100, top_x: 140, top_z: 150, height: 600), at: (x: 0, y: -290, z: -40), color: "ash"),
+            (slot: "arm-l", shape: Taper(x: 120, z: 60, top_x: 0, top_z: 0, height: 180), at: (x: 0, y: -680, z: -60), turn: (x: 180000, y: 0, z: 0), color: "bone"),
+            (slot: "arm-r", shape: Dome(radius: 170, segments: 6, rings: 2), at: (x: 0, y: 20, z: 0), stretch: (x: 1150, y: 800, z: 1050), color: "bone"),
+            (slot: "arm-r", shape: Taper(x: 90, z: 100, top_x: 140, top_z: 150, height: 600), at: (x: 0, y: -290, z: -40), color: "ash"),
+            (slot: "arm-r", shape: Cylinder(radius: 30, height: 260, sides: 6), at: (x: 0, y: -600, z: -60), turn: (x: 90000, y: 0, z: 0), color: "leather"),
+            (slot: "arm-r", shape: Box(x: 60, y: 320, z: 520), at: (x: 0, y: -640, z: -440), color: "steel-dark", top: Some("ember")),
+            (slot: "leg-l", shape: Taper(x: 120, z: 140, top_x: 180, top_z: 190, height: 800), at: (x: 0, y: -450, z: 0), color: "ash-dark"),
+            (slot: "leg-l", shape: Taper(x: 170, z: 260, top_x: 130, top_z: 160, height: 100), at: (x: 0, y: -900, z: -40), color: "ash-dark"),
+            (slot: "leg-r", shape: Taper(x: 120, z: 140, top_x: 180, top_z: 190, height: 800), at: (x: 0, y: -450, z: 0), color: "ash-dark"),
+            (slot: "leg-r", shape: Taper(x: 170, z: 260, top_x: 130, top_z: 160, height: 100), at: (x: 0, y: -900, z: -40), color: "ash-dark"),
+        ],
+        // Husks shamble where a wayfinder walks; everything else comes from
+        // the body plan.
+        animations: (walk: Some("husk-shamble"), swing: Some("husk-claw")),
+    ),
+    // Warden Sela: the settlement's guard — a blue coat flaring below a gold
+    // belt, a gold tabard, a domed steel helm with a brim, steel pauldrons,
+    // and a spear held upright.
+    (
+        schema_version: 1,
+        id: "warden-sela",
+        name: "Warden Sela",
+        body_plan: "humanoid",
+        palette: "cinderwake",
+        parts: [
+            (slot: "torso", shape: Taper(x: 360, z: 230, top_x: 500, top_z: 300, height: 560), at: (x: 0, y: 300, z: 0), color: "warden-blue", top: Some("warden-trim")),
+            (slot: "torso", shape: Taper(x: 370, z: 240, top_x: 360, top_z: 235, height: 80), at: (x: 0, y: 20, z: 0), color: "warden-trim"),
+            (slot: "torso", shape: Taper(x: 220, z: 40, top_x: 200, top_z: 40, height: 620), at: (x: 0, y: 170, z: -150), color: "warden-trim"),
+            (slot: "torso", shape: Taper(x: 440, z: 300, top_x: 370, top_z: 245, height: 300), at: (x: 0, y: -170, z: 0), color: "warden-blue"),
+            (slot: "head", shape: Taper(x: 230, z: 240, top_x: 250, top_z: 250, height: 270), at: (x: 0, y: 190, z: 0), color: "skin"),
+            (slot: "head", shape: Dome(radius: 160, segments: 8, rings: 2), at: (x: 0, y: 340, z: 0), stretch: (x: 1000, y: 900, z: 1050), color: "steel"),
+            (slot: "head", shape: Frustum(bottom: 185, top: 175, height: 40, sides: 8), at: (x: 0, y: 290, z: 0), color: "steel-dark"),
+            (slot: "head", shape: Wedge(x: 50, y: 70, z: 60), at: (x: 0, y: 170, z: -150), color: "skin-dark"),
+            (slot: "arm-l", shape: Dome(radius: 150, segments: 6, rings: 2), at: (x: 0, y: 10, z: 0), stretch: (x: 1100, y: 800, z: 1000), color: "steel"),
+            (slot: "arm-l", shape: Taper(x: 110, z: 110, top_x: 150, top_z: 150, height: 440), at: (x: 0, y: -220, z: 0), color: "warden-blue"),
+            (slot: "arm-l", shape: Box(x: 110, y: 130, z: 120), at: (x: 0, y: -500, z: 0), color: "skin"),
+            (slot: "arm-r", shape: Dome(radius: 150, segments: 6, rings: 2), at: (x: 0, y: 10, z: 0), stretch: (x: 1100, y: 800, z: 1000), color: "steel"),
+            (slot: "arm-r", shape: Taper(x: 110, z: 110, top_x: 150, top_z: 150, height: 440), at: (x: 0, y: -220, z: 0), color: "warden-blue"),
+            (slot: "arm-r", shape: Box(x: 110, y: 130, z: 120), at: (x: 0, y: -500, z: 0), color: "skin"),
+            (slot: "arm-r", shape: Cylinder(radius: 25, height: 1900, sides: 6), at: (x: 0, y: -300, z: -80), color: "leather"),
+            (slot: "arm-r", shape: Taper(x: 90, z: 30, top_x: 0, top_z: 0, height: 260), at: (x: 0, y: 780, z: -80), color: "steel"),
+            (slot: "leg-l", shape: Taper(x: 130, z: 150, top_x: 190, top_z: 200, height: 780), at: (x: 0, y: -440, z: 0), color: "leather"),
+            (slot: "leg-l", shape: Taper(x: 190, z: 300, top_x: 150, top_z: 190, height: 170), at: (x: 0, y: -865, z: -40), color: "boot"),
+            (slot: "leg-r", shape: Taper(x: 130, z: 150, top_x: 190, top_z: 200, height: 780), at: (x: 0, y: -440, z: 0), color: "leather"),
+            (slot: "leg-r", shape: Taper(x: 190, z: 300, top_x: 150, top_z: 190, height: 170), at: (x: 0, y: -865, z: -40), color: "boot"),
+        ],
+    ),
+    // Arbiter Thal of the old-forest order: a robe to the shins with a gold
+    // hem, a mantle over the shoulders, a peaked hood, a white beard, and a
+    // staff with a living light at its head.
+    (
+        schema_version: 1,
+        id: "arbiter-thal",
+        name: "Arbiter Thal",
+        body_plan: "humanoid",
+        palette: "cinderwake",
+        parts: [
+            (slot: "torso", shape: Frustum(bottom: 340, top: 200, height: 960, sides: 8), at: (x: 0, y: 40, z: 0), color: "robe"),
+            (slot: "torso", shape: Frustum(bottom: 350, top: 340, height: 50, sides: 8), at: (x: 0, y: -420, z: 0), color: "warden-trim"),
+            (slot: "torso", shape: Taper(x: 300, z: 250, top_x: 290, top_z: 240, height: 90), at: (x: 0, y: 200, z: 0), color: "bone"),
+            (slot: "torso", shape: Dome(radius: 260, segments: 8, rings: 2), at: (x: 0, y: 470, z: 0), stretch: (x: 1000, y: 550, z: 1000), color: "robe"),
+            (slot: "head", shape: Taper(x: 220, z: 230, top_x: 240, top_z: 240, height: 260), at: (x: 0, y: 160, z: 0), color: "skin-dark"),
+            (slot: "head", shape: Taper(x: 320, z: 330, top_x: 0, top_z: 80, height: 440), at: (x: 0, y: 240, z: 90), color: "robe"),
+            (slot: "head", shape: Taper(x: 150, z: 70, top_x: 30, top_z: 30, height: 200), at: (x: 0, y: 30, z: -110), turn: (x: 180000, y: 0, z: 0), color: "bone"),
+            (slot: "arm-l", shape: Frustum(bottom: 130, top: 90, height: 470, sides: 6), at: (x: 0, y: -215, z: 0), color: "robe"),
+            (slot: "arm-l", shape: Box(x: 100, y: 120, z: 110), at: (x: 0, y: -500, z: 0), color: "skin-dark"),
+            (slot: "arm-r", shape: Frustum(bottom: 130, top: 90, height: 470, sides: 6), at: (x: 0, y: -215, z: 0), color: "robe"),
+            (slot: "arm-r", shape: Box(x: 100, y: 120, z: 110), at: (x: 0, y: -500, z: 0), color: "skin-dark"),
+            (slot: "arm-r", shape: Cylinder(radius: 30, height: 1800, sides: 6), at: (x: 0, y: -250, z: -90), color: "bark"),
+            (slot: "arm-r", shape: Sphere(radius: 90, detail: 0), at: (x: 0, y: 680, z: -90), color: "leaf"),
+            (slot: "leg-l", shape: Taper(x: 110, z: 120, top_x: 150, top_z: 160, height: 780), at: (x: 0, y: -440, z: 0), color: "robe"),
+            (slot: "leg-l", shape: Taper(x: 170, z: 260, top_x: 130, top_z: 170, height: 120), at: (x: 0, y: -890, z: -30), color: "boot"),
+            (slot: "leg-r", shape: Taper(x: 110, z: 120, top_x: 150, top_z: 160, height: 780), at: (x: 0, y: -440, z: 0), color: "robe"),
+            (slot: "leg-r", shape: Taper(x: 170, z: 260, top_x: 130, top_z: 170, height: 120), at: (x: 0, y: -890, z: -30), color: "boot"),
+        ],
+    ),
+    // Ember Bolt in flight: a faceted coal with a tail of flame streaming
+    // behind it. Flies nose first (-Z).
+    (
+        schema_version: 1,
+        id: "ember-bolt",
+        name: "Ember bolt",
+        body_plan: "bolt",
+        palette: "cinderwake",
+        parts: [
+            (slot: "core", shape: Sphere(radius: 170, detail: 0), color: "eye"),
+            (slot: "core", shape: Taper(x: 260, z: 260, top_x: 0, top_z: 0, height: 560), at: (x: 0, y: 0, z: 320), turn: (x: 90000, y: 0, z: 0), color: "ember"),
+            (slot: "core", shape: Taper(x: 150, z: 150, top_x: 0, top_z: 0, height: 380), at: (x: 0, y: 90, z: 260), turn: (x: 75000, y: 0, z: 0), color: "resin"),
+        ],
+    ),
+    // A glob of resin in flight: a lumpy amber ball with a darker core
+    // showing through.
+    (
+        schema_version: 1,
+        id: "resin-glob",
+        name: "Resin glob",
+        body_plan: "bolt",
+        palette: "cinderwake",
+        parts: [
+            (slot: "core", shape: Sphere(radius: 190, detail: 0), stretch: (x: 1000, y: 900, z: 1200), color: "resin"),
+            (slot: "core", shape: Sphere(radius: 110, detail: 0), at: (x: 60, y: 70, z: 40), color: "corruption"),
+        ],
+    ),
+]

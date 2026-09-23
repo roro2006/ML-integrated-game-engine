@@ -1,0 +1,49 @@
+// What each status means (M9). An `ApplyStatus` naming a status not defined
+// here stops the content loading; before M9 it applied and did nothing.
+//
+// What a status can do is the allowlist in `game_core::content::StatusModifier`:
+// multipliers on damage taken, damage dealt, and stamina recovery (in
+// milli-units, so 500 halves), and damage over time per second. Each is
+// bounded by the loader. `color` is a swatch in `palette`, and is what the
+// status chip is drawn in.
+[
+    // `warden-guard`'s status: a real defensive trade — halve what you take
+    // while it holds, at the cost of the stamina the ability already spends.
+    (
+        schema_version: 1,
+        id: "status-guarded",
+        name: "Guarded",
+        palette: "cinderwake",
+        color: "warden-blue",
+        modifiers: [DamageTaken(500)],
+    ),
+    // The resin spitter's glob gums you up: stamina comes back at less than
+    // half the rate, so the next roll or swing comes later.
+    (
+        schema_version: 1,
+        id: "status-resin-mired",
+        name: "Mired",
+        palette: "cinderwake",
+        color: "resin",
+        modifiers: [StaminaRegen(400)],
+    ),
+    // The ember bolt keeps burning after it lands.
+    (
+        schema_version: 1,
+        id: "status-smouldering",
+        name: "Smouldering",
+        palette: "cinderwake",
+        color: "ember",
+        modifiers: [DamageOverTime(per_second: 3000, kind: Fire)],
+    ),
+    // The clearwater draught's afterglow: stamina comes back half as fast
+    // again, for five seconds.
+    (
+        schema_version: 1,
+        id: "status-refreshed",
+        name: "Refreshed",
+        palette: "cinderwake",
+        color: "leaf",
+        modifiers: [StaminaRegen(1500)],
+    ),
+]

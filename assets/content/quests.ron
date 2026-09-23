@@ -1,0 +1,113 @@
+// The slice's branching quest: the player chooses whether to secure the
+// waterworks for the settlers or negotiate access with the old-forest order,
+// and the two paths converge on a report that records a single resolution
+// (PROJECT_CONTEXT §6; ADR-0007 makes narrative a lead pillar).
+//
+// This is the worked example the loader tests and the authoring docs share, so
+// it exercises branching, a shared convergence node, and a reward package
+// rather than being minimal.
+[
+    (
+        schema_version: 1,
+        id: "still-waters",
+        title: "Still Waters",
+        start: "meet-sela",
+        nodes: {
+            "meet-sela": (
+                objective: TalkTo(npc: "warden-sela"),
+                next: ["survey-waterworks"],
+                resolution: None,
+            ),
+            "survey-waterworks": (
+                objective: Investigate(clue: "clue-fouled-intake"),
+                next: ["choose-allegiance"],
+                resolution: None,
+            ),
+            "choose-allegiance": (
+                objective: Decide(choice: "choice-water-rights"),
+                next: ["secure-works", "seek-order"],
+                resolution: None,
+            ),
+            "secure-works": (
+                objective: Defeat(encounter: "waterworks-ambush"),
+                next: ["report-back"],
+                resolution: None,
+            ),
+            // The other branch: rather than fighting for the waterworks, bring
+            // the old forest's arbiter back to Cinderwake and make terms.
+            //
+            // This originally named `old-forest-verge`, a location that never
+            // existed. Nothing noticed because the branch was unreachable and
+            // the loader could not resolve escort destinations; both are fixed.
+            // The settlement is the destination because that is where terms get
+            // made — escorting Thal to the lane he already stands in would be
+            // a valid reference and a meaningless objective.
+            "seek-order": (
+                objective: Escort(npc: "arbiter-thal", destination: "cinderwake-square"),
+                next: ["report-back"],
+                resolution: None,
+            ),
+            "report-back": (
+                objective: TalkTo(npc: "warden-sela"),
+                next: [],
+                resolution: Some("waters-restored"),
+            ),
+        },
+        rewards: (
+            items: {
+                "clearwater-draught": 2,
+                "warden-seal": 1,
+            },
+            experience: 450,
+            reputation: {
+                "cinderwake-settlers": 12,
+            },
+        ),
+    ),
+    // The second quest, and the crypt's reason to exist. `ashlord-stand` was
+    // authored, placed, and tagged on its spawns, but no quest asked for it —
+    // so the milestone's one elite was a fight nobody was sent to.
+    //
+    // Linear on purpose: `still-waters` already exercises branching, and a
+    // second branching quest would test the same machinery twice while adding
+    // nothing a player would notice.
+    (
+        schema_version: 1,
+        id: "ember-and-ash",
+        title: "Ember and Ash",
+        start: "hear-the-crypt",
+        nodes: {
+            "hear-the-crypt": (
+                objective: TalkTo(npc: "warden-sela"),
+                next: ["descend"],
+                resolution: None,
+            ),
+            // `Reach` is satisfied by arriving, which the slice already raises
+            // when a doorway is used.
+            "descend": (
+                objective: Reach(location: "crypt-of-ash"),
+                next: ["end-the-ashlord"],
+                resolution: None,
+            ),
+            "end-the-ashlord": (
+                objective: Defeat(encounter: "ashlord-stand"),
+                next: ["carry-word-back"],
+                resolution: None,
+            ),
+            "carry-word-back": (
+                objective: TalkTo(npc: "warden-sela"),
+                next: [],
+                resolution: Some("crypt-silenced"),
+            ),
+        },
+        rewards: (
+            items: {
+                "ember-ore": 8,
+            },
+            experience: 700,
+            reputation: {
+                "cinderwake-settlers": 18,
+            },
+        ),
+    ),
+]

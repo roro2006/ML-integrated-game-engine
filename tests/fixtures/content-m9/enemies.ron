@@ -1,0 +1,18 @@
+// A husk that has been near the fire: a variant, not a new body.
+[
+    (
+        schema_version: 1,
+        id: "cinder-husk",
+        name: "Cinder Husk",
+        behavior: Melee,
+        max_health: 70000,
+        damage: 8000,
+        abilities: ["cinder-claw"],
+        visual_tags: ["corruption", "husk", "fire"],
+        threat: 1400,
+        variant_of: Some("corrupted-husk"),
+        loot_table: Some("husk-drops"),
+        model: Some("corrupted-husk"),
+        presentation: (swing: Some("claw-rake"), hit: Some("strike-sparks")),
+    ),
+]

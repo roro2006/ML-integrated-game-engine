@@ -1,0 +1,9 @@
+// Fixture `unreachable` (M9 wave 1): no door leads down to the cellar.
+[
+    (
+        schema_version: 1,
+        id: "fixture-region",
+        name: "Fixture Region",
+        biome: Settlement,
+    ),
+]

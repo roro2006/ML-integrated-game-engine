@@ -1,0 +1,35 @@
+[
+    (
+        schema_version: 1,
+        id: "embers-in-the-hollow",
+        title: "Embers in the Hollow",
+        start: "ask-keeper",
+        nodes: {
+            "ask-keeper": (
+                objective: TalkTo(npc: "hollow-keeper"),
+                next: ["gather-embers"],
+                resolution: None,
+            ),
+            "gather-embers": (
+                objective: Collect(item: "hollow-ember", quantity: 2),
+                next: ["clear-stand"],
+                resolution: None,
+            ),
+            "clear-stand": (
+                objective: Defeat(encounter: "hollow-stand"),
+                next: ["tell-keeper"],
+                resolution: None,
+            ),
+            "tell-keeper": (
+                objective: TalkTo(npc: "hollow-keeper"),
+                next: [],
+                resolution: Some("hollow-quiet"),
+            ),
+        },
+        rewards: (
+            items: {"cooling-salve": 1},
+            experience: 150,
+            reputation: {},
+        ),
+    ),
+]

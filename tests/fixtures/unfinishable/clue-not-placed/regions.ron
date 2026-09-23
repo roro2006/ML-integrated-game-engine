@@ -1,0 +1,9 @@
+// Fixture `clue-not-placed` (M9 wave 1): the clue to investigate is placed in no location.
+[
+    (
+        schema_version: 1,
+        id: "fixture-region",
+        name: "Fixture Region",
+        biome: Settlement,
+    ),
+]

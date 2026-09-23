@@ -1,0 +1,32 @@
+// Weighted drops, rolled from the world seed so a replayed log drops exactly
+// the same items (see `LootTableDef::roll`).
+[
+    (
+        schema_version: 1,
+        id: "husk-drops",
+        rolls: 2,
+        entries: [
+            (item: "ash-cinder", quantity: 1, weight: 70),
+            (item: "corrupt-resin", quantity: 1, weight: 25),
+            (item: "ember-ore", quantity: 2, weight: 5),
+        ],
+    ),
+    (
+        schema_version: 1,
+        id: "old-forest-drops",
+        rolls: 1,
+        entries: [
+            (item: "old-forest-bark", quantity: 2, weight: 80),
+            (item: "still-reed", quantity: 1, weight: 20),
+        ],
+    ),
+    (
+        schema_version: 1,
+        id: "ashlord-drops",
+        rolls: 3,
+        entries: [
+            (item: "ember-ore", quantity: 3, weight: 50),
+            (item: "corrupt-resin", quantity: 2, weight: 50),
+        ],
+    ),
+]

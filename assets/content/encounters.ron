@@ -1,0 +1,44 @@
+// Encounters state an explicit threat budget, because M11 validates generated
+// encounters against one and an implied budget cannot be checked. Since M8 the
+// budget binds: the slots, at each enemy's own threat, must fit it, and the
+// placements in locations.ron must match the slots exactly.
+//
+// A placement's `wave` sets when it arrives: wave 0 is there when the player
+// arrives, and each later wave comes a second after the one before it falls,
+// announced by the encounter's `arrival` effect where each enemy will stand.
+[
+    (
+        schema_version: 1,
+        id: "waterworks-ambush",
+        name: "Waterworks Ambush",
+        // Was 4000 against slots costing 4200 — the field was inert, and the
+        // number wrong. Now it binds, with a little room.
+        threat_budget: 4500,
+        slots: [
+            (enemy: "corrupted-husk", count: 3),
+            (enemy: "resin-spitter", count: 1),
+        ],
+        // An ambush in two waves: two husks in the open, and when they fall a
+        // third comes up out of the ash with the spitter on the ridge behind.
+        arrival: Some("ash-rising"),
+    ),
+    (
+        schema_version: 1,
+        id: "old-forest-picket",
+        name: "Old-Forest Picket",
+        threat_budget: 4000,
+        slots: [
+            (enemy: "bark-warden", count: 2),
+        ],
+    ),
+    (
+        schema_version: 1,
+        id: "ashlord-stand",
+        name: "The Ashlord's Stand",
+        threat_budget: 9000,
+        slots: [
+            (enemy: "husk-ashlord", count: 1),
+            (enemy: "corrupted-husk", count: 2),
+        ],
+    ),
+]

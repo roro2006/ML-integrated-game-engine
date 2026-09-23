@@ -1,0 +1,10 @@
+// Fixture `nobody-there` (M9 wave 1): the quest asks the player to talk to an npc placed in no location.
+[
+    (
+        schema_version: 1,
+        id: "cellar-moss",
+        name: "Cellar Moss",
+        category: Material,
+        stack_limit: 20,
+    ),
+]

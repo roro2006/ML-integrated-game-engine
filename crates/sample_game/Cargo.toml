@@ -1,0 +1,28 @@
+[package]
+name = "sample_game"
+description = "Cinderwake vertical slice: the game that validates the engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "cinderwake"
+path = "src/main.rs"
+
+[dependencies]
+content_runtime.workspace = true
+debug_tools.workspace = true
+engine.workspace = true
+game_core.workspace = true
+game_runtime.workspace = true
+narrative.workspace = true
+
+[dev-dependencies]
+# Tests only: the slice's determinism and no-leak checks compare serialized
+# canonical state. The game itself writes saves through `game_core::save`.
+ron.workspace = true
+
+[lints]
+workspace = true

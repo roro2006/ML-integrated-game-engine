@@ -1,0 +1,10 @@
+// Fixture `never-started` (M9 wave 1): no conversation starts the quest.
+[
+    (
+        schema_version: 1,
+        id: "cellar-moss",
+        name: "Cellar Moss",
+        category: Material,
+        stack_limit: 20,
+    ),
+]

@@ -1,0 +1,17 @@
+// The cinder husk's claw: a hit that sets you burning.
+[
+    (
+        schema_version: 1,
+        id: "cinder-claw",
+        name: "Cinder Claw",
+        targeting: SingleEnemy,
+        cost: 0,
+        cooldown_ticks: 90,
+        windup_ticks: 14,
+        recovery_ticks: 18,
+        effects: [
+            DealDamage(amount: 5000, damage_type: Fire),
+            ApplyStatus(status: "status-cinder-burn", duration_ticks: 180),
+        ],
+    ),
+]
