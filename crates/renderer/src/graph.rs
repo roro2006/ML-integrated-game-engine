@@ -22,6 +22,8 @@
 //! The graph is generic over the context its passes receive, so the ordering
 //! and lifetime logic is tested without a device.
 
+pub(crate) mod resources;
+
 use std::collections::HashSet;
 use std::fmt::{self, Write as _};
 
