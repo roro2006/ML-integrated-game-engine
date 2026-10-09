@@ -10,6 +10,7 @@
 
 use crate::Color;
 use crate::debug_lines::DebugVertex;
+use crate::sampler::SamplerDesc;
 
 /// Handle to a mesh uploaded to the GPU.
 ///
@@ -73,7 +74,47 @@ impl MaterialHandle {
     }
 }
 
-/// What a surface looks like. Textures arrive in a later milestone.
+/// Which shader lights a material.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Shading {
+    /// The low-poly look: Lambert diffuse and flat ambient, no textures
+    /// (`lit.wgsl`). The Low tier and the existing slice use it.
+    #[default]
+    Flat,
+    /// Physically based metallic-roughness with textures (`pbr_lit.wgsl`).
+    Pbr,
+}
+
+/// How a material treats alpha.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum AlphaMode {
+    #[default]
+    Opaque,
+    /// Cut-out: fragments with alpha below the cutoff are discarded, for
+    /// foliage and fences. Blending waits for transparency sorting (D4).
+    Mask { cutoff: f32 },
+}
+
+/// A material's textures. Each slot is optional; an empty slot behaves as a
+/// texture of the slot's neutral value, so the factors alone decide.
+///
+/// The slot, not the texture, decides how texels are read: base colour and
+/// emissive are sampled as sRGB, normal and ORM as linear, whatever colour
+/// space the texture was uploaded with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MaterialTextures {
+    pub base_color: Option<TextureHandle>,
+    /// Tangent-space normal map, +Y up (OpenGL convention, as glTF).
+    pub normal: Option<TextureHandle>,
+    /// Packed occlusion (R), roughness (G), metallic (B), as glTF.
+    pub orm: Option<TextureHandle>,
+    pub emissive: Option<TextureHandle>,
+}
+
+/// What a surface looks like.
+///
+/// Build one with `MaterialDesc { base_color: .., ..MaterialDesc::default() }`:
+/// fields keep being added, and the defaults reproduce the flat look.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MaterialDesc {
     /// Linear RGBA: scene light, which the tonemap pass maps to the display,
@@ -89,6 +130,22 @@ pub struct MaterialDesc {
     /// body. A white tint multiplied into painted vertices changes nothing, so
     /// a flash expressed as a tint would vanish without a trace.
     pub flash: [f32; 4],
+    /// Flat by default. Every field below is read only by [`Shading::Pbr`].
+    pub shading: Shading,
+    pub textures: MaterialTextures,
+    pub sampler: SamplerDesc,
+    /// 0 for dielectrics, 1 for metals; multiplied by the ORM texture's blue.
+    pub metallic: f32,
+    /// Perceptual roughness, 0 (mirror) to 1; multiplied by the ORM green.
+    /// Clamped to 0.045 in the shader, below which GGX highlights alias.
+    pub roughness: f32,
+    /// Scales the normal map's tangent-space tilt; 0 flattens it.
+    pub normal_scale: f32,
+    /// How much the ORM texture's red darkens ambient light, 0 to 1.
+    pub occlusion_strength: f32,
+    /// Linear emitted light, multiplied by the emissive texture.
+    pub emissive: [f32; 3],
+    pub alpha: AlphaMode,
 }
 
 impl Default for MaterialDesc {
@@ -96,6 +153,15 @@ impl Default for MaterialDesc {
         Self {
             base_color: [1.0, 1.0, 1.0, 1.0],
             flash: [0.0, 0.0, 0.0, 0.0],
+            shading: Shading::Flat,
+            textures: MaterialTextures::default(),
+            sampler: SamplerDesc::default(),
+            metallic: 0.0,
+            roughness: 0.5,
+            normal_scale: 1.0,
+            occlusion_strength: 1.0,
+            emissive: [0.0, 0.0, 0.0],
+            alpha: AlphaMode::Opaque,
         }
     }
 }

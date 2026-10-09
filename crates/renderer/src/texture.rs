@@ -106,6 +106,15 @@ pub(crate) fn mip_extent(width: u32, height: u32, level: u32) -> (u32, u32) {
     (shrink(width), shrink(height))
 }
 
+/// The same texels read in the other colour space.
+fn other_space(format: wgpu::TextureFormat) -> wgpu::TextureFormat {
+    if format.is_srgb() {
+        format.remove_srgb_suffix()
+    } else {
+        format.add_srgb_suffix()
+    }
+}
+
 pub(crate) fn format_for(color_space: ColorSpace) -> wgpu::TextureFormat {
     match color_space {
         ColorSpace::Srgb => wgpu::TextureFormat::Rgba8UnormSrgb,
@@ -144,14 +153,8 @@ pub struct TextureInfo {
 /// An uploaded texture.
 #[derive(Debug)]
 pub(crate) struct GpuTexture {
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "bound by materials in B4, the next change")
-    )]
+    /// Viewable as sRGB or linear: a material slot picks (`pbr::slot_view`).
     pub(crate) texture: wgpu::Texture,
-    /// Every mip level, for sampling.
-    #[expect(dead_code, reason = "bound by materials in B4, the next change")]
-    pub(crate) view: wgpu::TextureView,
     pub(crate) color_space: ColorSpace,
     pub(crate) width: u32,
     pub(crate) height: u32,
@@ -206,7 +209,9 @@ fn upload_unscoped(
         dimension: wgpu::TextureDimension::D2,
         format,
         usage: usage(mip_levels),
-        view_formats: &[],
+        // Either colour space can be viewed, so the material slot, not the
+        // upload, decides how texels are read.
+        view_formats: &[other_space(format)],
     });
     queue.write_texture(
         wgpu::TexelCopyTextureInfo {
@@ -227,7 +232,6 @@ fn upload_unscoped(
         mips.generate(device, queue, &texture, format, mip_levels);
     }
     GpuTexture {
-        view: texture.create_view(&wgpu::TextureViewDescriptor::default()),
         texture,
         color_space: desc.color_space,
         width: desc.width,

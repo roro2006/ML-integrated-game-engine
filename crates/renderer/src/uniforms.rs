@@ -413,10 +413,12 @@ mod tests {
         let red = materials.insert(GpuMaterial {
             base_color: [1.0, 0.0, 0.0, 1.0],
             flash: [0.0; 4],
+            pbr: None,
         });
         let blue = materials.insert(GpuMaterial {
             base_color: [0.0, 0.0, 1.0, 1.0],
             flash: [0.0; 4],
+            pbr: None,
         });
 
         let draws = vec![

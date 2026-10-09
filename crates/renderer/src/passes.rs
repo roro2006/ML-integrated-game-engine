@@ -181,8 +181,10 @@ impl Renderer {
             return Ok(());
         }
         let stride = self.draw_stride as usize;
-        pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &self.globals_bind_group, &[]);
+        // Draws stay in the order the engine gave; the pipeline changes only
+        // when a draw needs a different one. Group 0 is rebound on every
+        // change, since a pipeline switch may invalidate it.
+        let mut current: Option<Option<crate::permutation::PermutationKey>> = None;
         for planned in &plan.draws {
             let Some(mesh) = self.meshes.get_by_index(planned.mesh) else {
                 continue;
@@ -190,6 +192,27 @@ impl Renderer {
             let Ok(offset) = u32::try_from(planned.slot * stride) else {
                 continue;
             };
+            let pbr = frame
+                .draws
+                .get(planned.draw)
+                .and_then(|draw| self.materials.get(draw.material))
+                .and_then(|material| material.pbr.as_ref());
+            let wanted = pbr.map(|binding| binding.key);
+            if current != Some(wanted) {
+                let pipeline = match wanted {
+                    Some(key) => self
+                        .pbr_pipelines
+                        .get(&key)
+                        .ok_or_else(|| format!("no PBR pipeline for {key:?}"))?,
+                    None => &self.pipeline,
+                };
+                pass.set_pipeline(pipeline);
+                pass.set_bind_group(0, &self.globals_bind_group, &[]);
+                current = Some(wanted);
+            }
+            if let Some(binding) = pbr {
+                pass.set_bind_group(2, &binding.bind_group, &[]);
+            }
             pass.set_bind_group(1, &self.draw_bind_group, &[offset]);
             pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
             pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);

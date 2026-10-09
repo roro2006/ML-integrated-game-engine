@@ -300,6 +300,7 @@ impl MenuLook {
             assets.create_material(&MaterialDesc {
                 base_color: [r, g, b, 1.0],
                 flash: [r, g, b, 0.95],
+                ..MaterialDesc::default()
             })
         };
         // After the old chatbox: a dark panel, the speaker in gold, pale

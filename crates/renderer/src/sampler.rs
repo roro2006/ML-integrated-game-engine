@@ -100,6 +100,7 @@ impl<S> SamplerCache<S> {
         self.samplers.entry(key).or_insert_with(|| create(key))
     }
 
+    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.samplers.len()
     }

@@ -296,6 +296,7 @@ impl VfxLibrary {
             assets.create_material(&MaterialDesc {
                 base_color: [r, g, b, 1.0],
                 flash: [r, g, b, amount],
+                ..MaterialDesc::default()
             })
         }
         // Spires are solid rock: lit like the world, their colour in their

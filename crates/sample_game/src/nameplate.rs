@@ -122,6 +122,7 @@ impl NameLibrary {
             assets.create_material(&MaterialDesc {
                 base_color: [r, g, b, 1.0],
                 flash: [r, g, b, 0.9],
+                ..MaterialDesc::default()
             })
         };
         let statuses = status_meshes

@@ -33,13 +33,11 @@ mod material;
 mod mesh;
 mod mesh_data;
 mod passes;
+mod pbr;
+mod permutation;
 mod pipeline;
 mod post;
 mod registry;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "materials bind samplers in B4, the next change")
-)]
 mod sampler;
 mod shaders;
 mod tangents;
@@ -50,8 +48,9 @@ mod uniforms;
 
 pub use debug_lines::DebugVertex;
 pub use frame::{
-    AmbientLight, DEFAULT_EXPOSURE_EV, DirectionalLight, DrawCommand, MaterialDesc, MaterialHandle,
-    MeshHandle, PostSettings, RenderFrame, TextureHandle, Tonemapper,
+    AlphaMode, AmbientLight, DEFAULT_EXPOSURE_EV, DirectionalLight, DrawCommand, MaterialDesc,
+    MaterialHandle, MaterialTextures, MeshHandle, PostSettings, RenderFrame, Shading, TextureHandle,
+    Tonemapper,
 };
 pub use image::Image;
 pub use mesh::MeshInfo;
@@ -361,6 +360,14 @@ pub struct Renderer {
 
     textures: Registry<TextureHandle, texture::GpuTexture>,
     mips: texture::MipGenerator,
+
+    /// The PBR material: group 2's layout, a pipeline per permutation, all
+    /// built at startup, and the textures empty slots fall back to.
+    material_layout: wgpu::BindGroupLayout,
+    pbr_pipeline_layout: wgpu::PipelineLayout,
+    pbr_pipelines: BTreeMap<permutation::PermutationKey, wgpu::RenderPipeline>,
+    default_textures: pbr::DefaultTextures,
+    samplers: sampler::SamplerCache<wgpu::Sampler>,
 }
 
 impl Renderer {
@@ -509,6 +516,14 @@ impl Renderer {
         let debug_vertex_buffer =
             debug_lines::create_vertex_buffer(&device, debug_lines::INITIAL_VERTEX_CAPACITY);
 
+        let material_layout = pbr::material_layout(&device);
+        let pbr_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("pbr-pipeline-layout"),
+            bind_group_layouts: &[Some(&globals_layout), Some(&draw_layout), Some(&material_layout)],
+            immediate_size: 0,
+        });
+        let pbr_pipelines = build_pbr_pipelines(&device, &mut shaders, &pbr_pipeline_layout)?;
+
         let tonemap_layout = tonemap::bind_group_layout(&device);
         let tonemap_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("tonemap-pipeline-layout"),
@@ -538,6 +553,22 @@ impl Renderer {
             pipeline::create_globals_resources(&device, &globals_layout);
         let (draw_buffer, draw_bind_group) =
             pipeline::create_draw_resources(&device, &draw_layout, draw_stride, INITIAL_DRAW_CAPACITY);
+
+        let default_textures = {
+            let one = |texel: [u8; 4], color_space| {
+                let desc = TextureDesc {
+                    width: 1,
+                    height: 1,
+                    color_space,
+                    mips: Mips::Single,
+                };
+                texture::upload(&device, &queue, &mips, &desc, &texel).map_err(RenderError::TextureUpload)
+            };
+            pbr::DefaultTextures {
+                white: one(pbr::WHITE_TEXEL, ColorSpace::Srgb)?,
+                flat_normal: one(pbr::FLAT_NORMAL_TEXEL, ColorSpace::Linear)?,
+            }
+        };
 
         let mut renderer = Self {
             device,
@@ -574,6 +605,11 @@ impl Renderer {
             post_buffer,
             textures: Registry::default(),
             mips,
+            material_layout,
+            pbr_pipeline_layout,
+            pbr_pipelines,
+            default_textures,
+            samplers: sampler::SamplerCache::default(),
         };
         renderer.configure_output();
         Ok(renderer)
@@ -687,8 +723,80 @@ impl Renderer {
     }
 
     /// Registers a material and returns a handle to it.
+    ///
+    /// A PBR material's bind group is built here, once. A texture handle that
+    /// resolves to nothing falls back to the slot's neutral texture, so a
+    /// missing asset shows as an untextured surface rather than failing.
     pub fn create_material(&mut self, desc: &MaterialDesc) -> MaterialHandle {
-        self.materials.insert(GpuMaterial::from_desc(desc))
+        let mut material = GpuMaterial::from_desc(desc);
+        if desc.shading == Shading::Pbr {
+            material.pbr = Some(self.pbr_binding(desc));
+        }
+        self.materials.insert(material)
+    }
+
+    fn pbr_binding(&mut self, desc: &MaterialDesc) -> material::PbrBinding {
+        use pbr::SlotSpace;
+
+        let params = self.upload_buffer(
+            "material-params",
+            &pbr::material_params_bytes(desc),
+            wgpu::BufferUsages::UNIFORM,
+        );
+        let slot = |handle: Option<TextureHandle>, fallback: &texture::GpuTexture, space: SlotSpace| {
+            let uploaded = handle
+                .and_then(|handle| self.textures.get(handle))
+                .unwrap_or(fallback);
+            pbr::slot_view(uploaded, space)
+        };
+        let defaults = &self.default_textures;
+        let base_color = slot(desc.textures.base_color, &defaults.white, SlotSpace::Srgb);
+        let normal = slot(desc.textures.normal, &defaults.flat_normal, SlotSpace::Linear);
+        let orm = slot(desc.textures.orm, &defaults.white, SlotSpace::Linear);
+        let emissive = slot(desc.textures.emissive, &defaults.white, SlotSpace::Srgb);
+        let device = &self.device;
+        let sampler = self.samplers.get_or_create(desc.sampler, |normalised| {
+            device.create_sampler(&normalised.to_wgpu())
+        });
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("material-bind-group"),
+            layout: &self.material_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&base_color),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&normal),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&orm),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&emissive),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+            ],
+        });
+        material::PbrBinding {
+            key: permutation::PermutationKey::for_material(desc),
+            bind_group,
+        }
+    }
+
+    /// PBR pipelines compiled, one per permutation.
+    pub fn pbr_pipeline_count(&self) -> usize {
+        self.pbr_pipelines.len()
     }
 
     /// Counts and bounds for an uploaded mesh, or `None` for an unknown handle.
@@ -722,9 +830,11 @@ impl Renderer {
             &self.tonemap_pipeline_layout,
             self.color_format,
         )?;
+        let pbr_pipelines = build_pbr_pipelines(&self.device, &mut self.shaders, &self.pbr_pipeline_layout)?;
         self.pipeline = pipeline;
         self.debug_pipeline = debug_pipeline;
         self.tonemap_pipeline = tonemap_pipeline;
+        self.pbr_pipelines = pbr_pipelines;
         self.shader_failures.clear();
         self.shader_error = None;
         Ok(())
@@ -809,6 +919,20 @@ impl Renderer {
                 self.debug_pipeline = pipeline;
             }
         }
+        // `changed` names pbr_lit.wgsl when it or brdf.wgsl changed.
+        if changed.iter().any(|name| name == shaders::PBR_LIT) {
+            let rebuilt = build_pbr_pipelines(&self.device, &mut self.shaders, &self.pbr_pipeline_layout);
+            match rebuilt {
+                Ok(pipelines) => {
+                    self.pbr_pipelines = pipelines;
+                    self.shader_failures.remove(shaders::PBR_LIT);
+                }
+                Err(error) => {
+                    self.shader_failures.insert(shaders::PBR_LIT, error.to_string());
+                }
+            }
+            self.refresh_shader_error();
+        }
         // `changed` names the tonemap shader when it or `colour.wgsl` changed.
         if changed.iter().any(|name| name == shaders::TONEMAP) {
             let rebuilt = build_tonemap_pipeline(
@@ -840,6 +964,11 @@ impl Renderer {
                 None
             }
         };
+        self.refresh_shader_error();
+        pipeline
+    }
+
+    fn refresh_shader_error(&mut self) {
         self.shader_error = (!self.shader_failures.is_empty()).then(|| {
             self.shader_failures
                 .values()
@@ -847,7 +976,6 @@ impl Renderer {
                 .collect::<Vec<_>>()
                 .join("\n")
         });
-        pipeline
     }
 
     /// Grows the per-draw uniform buffer to hold at least `needed` draws.
@@ -1200,6 +1328,26 @@ impl Target {
         };
         texture.create_view(&wgpu::TextureViewDescriptor::default())
     }
+}
+
+/// Compiles every PBR permutation. Any failure fails the whole set, so a
+/// material can never find its permutation missing.
+fn build_pbr_pipelines(
+    device: &wgpu::Device,
+    shaders: &mut ShaderLibrary,
+    layout: &wgpu::PipelineLayout,
+) -> Result<BTreeMap<permutation::PermutationKey, wgpu::RenderPipeline>, RenderError> {
+    let expanded = shaders.expanded(shaders::PBR_LIT).map_err(RenderError::Shader)?;
+    permutation::PermutationKey::all()
+        .map(|key| {
+            pbr::create_pipeline(device, layout, &expanded.text, key)
+                .map(|pipeline| (key, pipeline))
+                .map_err(|message| RenderError::ShaderCompile {
+                    shader: format!("{} {key:?}", shaders::PBR_LIT),
+                    message: expanded.annotate(&message),
+                })
+        })
+        .collect()
 }
 
 /// Builds the tonemap pipeline for a `format` swapchain. A compile error names

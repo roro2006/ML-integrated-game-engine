@@ -423,6 +423,7 @@ impl HudLook {
             assets.create_material(&MaterialDesc {
                 base_color: [r, g, b, 1.0],
                 flash: [r, g, b, 0.95],
+                ..MaterialDesc::default()
             })
         };
         let statuses = content

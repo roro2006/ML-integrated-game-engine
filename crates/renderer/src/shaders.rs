@@ -30,6 +30,12 @@ pub const DEBUG_LINE: &str = "debug_line.wgsl";
 /// The fullscreen pass that tonemaps the HDR scene onto the swapchain.
 pub(crate) const TONEMAP: &str = "tonemap.wgsl";
 
+/// Physically based metallic-roughness material.
+pub(crate) const PBR_LIT: &str = "pbr_lit.wgsl";
+
+/// The metallic-roughness BRDF. Included, never compiled alone.
+pub(crate) const BRDF: &str = "brdf.wgsl";
+
 /// Draws one mip level from the level above it.
 pub(crate) const MIP_DOWNSAMPLE: &str = "mip_downsample.wgsl";
 
@@ -62,6 +68,8 @@ const EMBEDDED: &[(&str, &str)] = &[
     (TONEMAP, shader_file!("tonemap.wgsl")),
     (COLOUR, shader_file!("colour.wgsl")),
     (MIP_DOWNSAMPLE, shader_file!("mip_downsample.wgsl")),
+    (PBR_LIT, shader_file!("pbr_lit.wgsl")),
+    (BRDF, shader_file!("brdf.wgsl")),
 ];
 
 fn embedded_source(name: &str) -> Option<&'static str> {

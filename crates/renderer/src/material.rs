@@ -1,10 +1,9 @@
 //! Registered materials.
 //!
-//! A material is currently just a linear base colour: the lit shader has no
-//! textures, so there is nothing to bind per material and no GPU resource to
-//! own. Materials still go through a registry and a handle, because the handle
-//! is the thing the rest of the engine holds, and keeping that boundary in
-//! place now means textures can arrive later without changing any caller.
+//! Every material has a tint and a flash, which ride in the per-draw uniform
+//! (ADR-0017). A flat material needs nothing else. A PBR material also owns a
+//! bind group (group 2) holding its parameters, textures and sampler, built
+//! once when it is created, and names the shader permutation it draws with.
 
 /// The colours a material contributes to its draw's `DrawData` block.
 ///
@@ -14,20 +13,31 @@ pub(crate) trait BaseColor {
     fn flash(&self) -> [f32; 4];
 }
 
+/// What a PBR material binds and which pipeline draws it.
+#[derive(Debug)]
+pub(crate) struct PbrBinding {
+    pub(crate) key: crate::permutation::PermutationKey,
+    pub(crate) bind_group: wgpu::BindGroup,
+}
+
 /// A registered material.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug)]
 pub(crate) struct GpuMaterial {
     /// Linear RGBA tint, copied from the `MaterialDesc` it was created from.
     pub(crate) base_color: [f32; 4],
     /// The flash overlay, likewise copied.
     pub(crate) flash: [f32; 4],
+    /// `None` for a flat material.
+    pub(crate) pbr: Option<PbrBinding>,
 }
 
 impl GpuMaterial {
+    /// A flat material, or the per-draw half of a PBR one.
     pub(crate) fn from_desc(desc: &crate::frame::MaterialDesc) -> Self {
         Self {
             base_color: desc.base_color,
             flash: desc.flash,
+            pbr: None,
         }
     }
 }
@@ -54,6 +64,7 @@ mod tests {
         let desc = MaterialDesc {
             base_color: [0.2, 0.4, 0.6, 1.0],
             flash: [1.0, 1.0, 1.0, 0.5],
+            ..MaterialDesc::default()
         };
         let handle = materials.insert(GpuMaterial::from_desc(&desc));
 

@@ -179,6 +179,7 @@ pub(crate) fn build(renderer: &mut Renderer) -> RenderFrame {
     let tinted_flashing = renderer.create_material(&MaterialDesc {
         base_color: [1.0, 0.7, 0.7, 1.0],
         flash: [1.0, 1.0, 1.0, 0.4],
+        ..MaterialDesc::default()
     });
 
     let view = look_at([3.5, 3.0, 5.0], [0.0, 0.5, 0.0], [0.0, 1.0, 0.0]);
@@ -406,5 +407,241 @@ fn the_reference_scene_matches_its_golden_image() {
         .expect("a headless frame reads back");
     if let Err(message) = golden::check("reference_scene", &image, 0) {
         panic!("{message}");
+    }
+}
+
+/// PBR acceptance: one camera-facing quad, so the centre pixel has a known
+/// normal, view and light direction, and its shade can be predicted.
+mod pbr {
+    use super::*;
+    use crate::pbr::mirror;
+    use crate::post::tonemap::mirror::display_code;
+    use crate::{ColorSpace, MaterialTextures, Mips, PostSettings, Shading, TextureDesc};
+
+    const PI: f32 = std::f32::consts::PI;
+
+    /// A 4 m quad at the origin facing +Z, with top-down UVs.
+    fn quad() -> MeshData {
+        MeshData {
+            positions: vec![
+                [-2.0, -2.0, 0.0],
+                [2.0, -2.0, 0.0],
+                [2.0, 2.0, 0.0],
+                [-2.0, 2.0, 0.0],
+            ],
+            normals: vec![[0.0, 0.0, 1.0]; 4],
+            uvs: vec![[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            ..MeshData::default()
+        }
+    }
+
+    /// The centre pixel of the quad, lit by `to_light`, with no ambient.
+    fn centre(renderer: &mut Renderer, material: &MaterialDesc, to_light: Vec3, exposure_ev: f32) -> [u8; 3] {
+        let mesh = renderer.upload_mesh(&quad()).expect("valid");
+        let material = renderer.create_material(material);
+        let view = look_at(EYE, [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+        let projection = perspective(
+            FOV_Y_DEGREES.to_radians(),
+            WIDTH as f32 / HEIGHT as f32,
+            0.1,
+            20.0,
+        );
+        let mut frame = RenderFrame::new(mul(&projection, &view), Color::BLACK);
+        frame.camera_position = EYE;
+        frame.light = crate::DirectionalLight {
+            color: [1.0, 1.0, 1.0],
+            intensity: 1.0,
+            ..crate::DirectionalLight::default()
+        }
+        .with_direction(to_light);
+        frame.ambient.intensity = 0.0;
+        frame.post = PostSettings {
+            exposure_ev,
+            ..PostSettings::default()
+        };
+        frame.push(DrawCommand {
+            mesh,
+            material,
+            model: IDENTITY,
+            normal_matrix: IDENTITY,
+        });
+        let image = renderer.render_to_image(&frame).expect("reads back");
+        let [r, g, b, _] = image.pixel(WIDTH / 2, HEIGHT / 2).expect("in bounds");
+        [r, g, b]
+    }
+
+    const FOV_Y_DEGREES: f32 = 40.0;
+    const EYE: Vec3 = [0.0, 0.0, 3.0];
+
+    /// The direction to the eye from where the centre pixel's ray meets the
+    /// quad. The pixel centre sits half a pixel off the axis, and on a smooth
+    /// surface lit head on that small tilt already moves the GGX peak by
+    /// around ten percent, so the reference must use the real direction.
+    fn to_view_at_centre_pixel() -> Vec3 {
+        let pixel_x = (WIDTH / 2) as f32 + 0.5;
+        let pixel_y = (HEIGHT / 2) as f32 + 0.5;
+        let ndc = [
+            pixel_x / WIDTH as f32 * 2.0 - 1.0,
+            1.0 - pixel_y / HEIGHT as f32 * 2.0,
+        ];
+        let half_height = (FOV_Y_DEGREES.to_radians() / 2.0).tan();
+        let aspect = WIDTH as f32 / HEIGHT as f32;
+        // The ray leaves the eye along -Z; it meets z = 0 after EYE.z metres.
+        let hit = [
+            ndc[0] * half_height * aspect * EYE[2],
+            ndc[1] * half_height * EYE[2],
+            0.0,
+        ];
+        normalize(sub(EYE, hit))
+    }
+
+    /// Exposure that puts `linear` at mid grey, where a code value is the
+    /// finest step of the curve, so the comparison is a tight relative check.
+    fn exposure_for(linear: [f32; 3]) -> f32 {
+        let brightest = linear.iter().copied().fold(0.0, f32::max).max(1e-6);
+        (0.18 / brightest).log2()
+    }
+
+    fn assert_close(got: [u8; 3], expected: [u8; 3], what: &str) {
+        for (g, e) in got.into_iter().zip(expected) {
+            assert!(g.abs_diff(e) <= 2, "{what}: got {got:?}, expected {expected:?}");
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a GPU adapter and driver"]
+    fn every_permutation_is_compiled_at_startup() {
+        assert_eq!(headless().pbr_pipeline_count(), 8);
+    }
+
+    /// B4 acceptance: metallic 0 and 1, roughness from smooth to rough, with
+    /// the light head on and at 30 degrees, each matching the analytic BRDF.
+    #[test]
+    #[ignore = "requires a GPU adapter and driver"]
+    fn the_shader_matches_the_analytic_brdf() {
+        let mut renderer = headless();
+        let albedo = [0.8, 0.5, 0.3];
+        let mut failures = Vec::new();
+        for to_light in [[0.0, 0.0, 1.0], [0.5, 0.0, 0.866]] {
+            let to_light = normalize(to_light);
+            for metallic in [0.0, 1.0] {
+                for roughness in [0.1, 0.5, 1.0] {
+                    let linear = mirror::shade(
+                        [0.0, 0.0, 1.0],
+                        to_view_at_centre_pixel(),
+                        to_light,
+                        albedo,
+                        metallic,
+                        roughness,
+                        [PI; 3],
+                        [0.0; 3],
+                    );
+                    let exposure_ev = exposure_for(linear);
+                    let settings = PostSettings {
+                        exposure_ev,
+                        ..PostSettings::default()
+                    };
+                    let material = MaterialDesc {
+                        base_color: [albedo[0], albedo[1], albedo[2], 1.0],
+                        shading: Shading::Pbr,
+                        metallic,
+                        roughness,
+                        ..MaterialDesc::default()
+                    };
+                    let got = centre(&mut renderer, &material, to_light, exposure_ev);
+                    let expected = display_code(linear, &settings);
+                    if got.iter().zip(expected).any(|(g, e)| g.abs_diff(e) > 2) {
+                        failures.push(format!(
+                            "metallic {metallic}, roughness {roughness}, light {to_light:?}: got {got:?}, expected {expected:?}"
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{}",
+            failures.join(
+                "
+"
+            )
+        );
+    }
+
+    /// A normal map tilting every normal towards +X must shade exactly like
+    /// geometry tilted that way, whichever colour space the map was uploaded
+    /// in, because the normal slot always reads linear.
+    #[test]
+    #[ignore = "requires a GPU adapter and driver"]
+    fn a_normal_map_tilts_the_shading_and_is_always_read_linear() {
+        let mut renderer = headless();
+        // Encoded tilt: x = 191/255 * 2 - 1, z = 218/255 * 2 - 1.
+        let texel = [191u8, 128, 218, 255];
+        let decoded = [
+            191.0 / 255.0 * 2.0 - 1.0,
+            128.0 / 255.0 * 2.0 - 1.0,
+            218.0 / 255.0 * 2.0 - 1.0,
+        ];
+        // The quad's tangent is +X and, with top-down UVs, its bitangent -Y.
+        let normal = normalize([decoded[0], -decoded[1], decoded[2]]);
+        let to_light = normalize([0.6, 0.0, 0.8]);
+        let linear = mirror::shade(
+            normal,
+            to_view_at_centre_pixel(),
+            to_light,
+            [0.7; 3],
+            0.0,
+            1.0,
+            [PI; 3],
+            [0.0; 3],
+        );
+        let exposure_ev = exposure_for(linear);
+        let settings = PostSettings {
+            exposure_ev,
+            ..PostSettings::default()
+        };
+        let flat = centre(
+            &mut renderer,
+            &MaterialDesc {
+                base_color: [0.7, 0.7, 0.7, 1.0],
+                shading: Shading::Pbr,
+                roughness: 1.0,
+                ..MaterialDesc::default()
+            },
+            to_light,
+            exposure_ev,
+        );
+
+        for color_space in [ColorSpace::Linear, ColorSpace::Srgb] {
+            let map = renderer
+                .create_texture(
+                    &TextureDesc {
+                        width: 2,
+                        height: 2,
+                        color_space,
+                        mips: Mips::Single,
+                    },
+                    &texel.repeat(4),
+                )
+                .expect("valid");
+            let material = MaterialDesc {
+                base_color: [0.7, 0.7, 0.7, 1.0],
+                shading: Shading::Pbr,
+                roughness: 1.0,
+                textures: MaterialTextures {
+                    normal: Some(map),
+                    ..MaterialTextures::default()
+                },
+                ..MaterialDesc::default()
+            };
+            let got = centre(&mut renderer, &material, to_light, exposure_ev);
+            assert_close(
+                got,
+                display_code(linear, &settings),
+                &format!("normal map uploaded {color_space:?}"),
+            );
+            assert_ne!(got, flat, "the map visibly changes the shading");
+        }
     }
 }
