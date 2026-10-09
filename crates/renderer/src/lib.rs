@@ -48,7 +48,7 @@ mod uniforms;
 
 pub use debug_lines::DebugVertex;
 pub use frame::{
-    AlphaMode, AmbientLight, AutoExposure, DEFAULT_EXPOSURE_EV, DirectionalLight, DrawCommand, Grade,
+    AlphaMode, AmbientLight, AutoExposure, Bloom, DEFAULT_EXPOSURE_EV, DirectionalLight, DrawCommand, Grade,
     MaterialDesc, MaterialHandle, MaterialTextures, MeshHandle, PostSettings, RenderFrame, Shading,
     TextureHandle, Tonemapper,
 };
@@ -373,6 +373,7 @@ pub struct Renderer {
     /// was drawn, which sets how far exposure adapts.
     exposure: post::exposure::ExposureResources,
     last_frame: Option<Instant>,
+    bloom: post::bloom::BloomResources,
 }
 
 impl Renderer {
@@ -538,6 +539,15 @@ impl Renderer {
         let tonemap_pipeline =
             build_tonemap_pipeline(&device, &mut shaders, &tonemap_pipeline_layout, color_format)?;
         let post_buffer = tonemap::create_post_buffer(&device);
+        let bloom = {
+            let expanded = shaders.expanded(shaders::BLOOM).map_err(RenderError::Shader)?;
+            post::bloom::BloomResources::new(&device, &expanded.text).map_err(|message| {
+                RenderError::ShaderCompile {
+                    shader: shaders::BLOOM.to_owned(),
+                    message: expanded.annotate(&message),
+                }
+            })?
+        };
         let exposure = {
             let source = shaders
                 .source(shaders::EXPOSURE_HISTOGRAM)
@@ -629,6 +639,7 @@ impl Renderer {
             samplers: sampler::SamplerCache::default(),
             exposure,
             last_frame: None,
+            bloom,
         };
         renderer.configure_output();
         Ok(renderer)
@@ -1121,6 +1132,13 @@ impl Renderer {
             .last_frame
             .map_or(0.0, |last| now.duration_since(last).as_secs_f32());
         self.last_frame = Some(now);
+        if post::bloom::enabled(&frame.post.bloom) {
+            self.queue.write_buffer(
+                &self.bloom.params,
+                0,
+                &post::bloom::params_bytes(&frame.post.bloom),
+            );
+        }
         if let Some(auto) = frame.post.auto_exposure {
             self.queue.write_buffer(
                 &self.exposure.params,

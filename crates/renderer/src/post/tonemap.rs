@@ -143,6 +143,12 @@ pub(crate) fn post_bytes(settings: &PostSettings) -> [u8; POST_UNIFORM_SIZE] {
     let mut out = [0; POST_UNIFORM_SIZE];
     out[0..4].copy_from_slice(&exposure_scale(settings.exposure_ev).to_le_bytes());
     out[4..8].copy_from_slice(&operator(settings.tonemapper).to_le_bytes());
+    let bloom = if super::bloom::enabled(&settings.bloom) {
+        settings.bloom.intensity
+    } else {
+        0.0
+    };
+    out[8..12].copy_from_slice(&bloom.to_le_bytes());
     out[12..16].copy_from_slice(&u32::from(settings.auto_exposure.is_some()).to_le_bytes());
     let grade = settings.grade;
     let inverse_gamma = grade.gamma.map(|gamma| 1.0 / sanitised_gamma(gamma));
@@ -213,6 +219,22 @@ pub(crate) fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout 
                     has_dynamic_offset: false,
                     min_binding_size: wgpu::BufferSize::new(super::exposure::STATE_SIZE as u64),
                 },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 4,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
         ],
@@ -386,9 +408,14 @@ mod tests {
                 gain: [1.0, 1.0, 0.5],
             },
             auto_exposure: None,
+            bloom: crate::Bloom {
+                intensity: 0.25,
+                ..crate::Bloom::default()
+            },
         });
         assert_eq!(f32_at(&bytes, 0), 2.0);
         assert_eq!(u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]), 1);
+        assert_eq!(f32_at(&bytes, 8), 0.25, "bloom intensity");
         assert_eq!(f32_at(&bytes, 16), 0.1, "lift.r");
         assert_eq!(f32_at(&bytes, 32), 0.5, "inverse gamma.r");
         assert_eq!(f32_at(&bytes, 48 + 8), 0.5, "gain.b");

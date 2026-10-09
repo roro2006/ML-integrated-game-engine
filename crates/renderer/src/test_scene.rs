@@ -697,3 +697,94 @@ mod pbr {
         }
     }
 }
+
+/// E1 bloom acceptance: light above the threshold bleeds past its edges,
+/// light below it does not, and more light gives a brighter halo.
+mod bloom {
+    use super::*;
+    use crate::{Bloom, Image, PostSettings};
+
+    /// Pixels right of the cube's edge: the cube spans about 26 pixels
+    /// around the centre, so 30 to the right is clear of it.
+    const HALO: (u32, u32) = (WIDTH / 2 + 30, HEIGHT / 2);
+
+    /// A painted cube facing the camera on black, its material scaled by
+    /// `brightness`, drawn with `bloom`.
+    fn glowing_cube(renderer: &mut Renderer, brightness: f32, light_intensity: f32, bloom: Bloom) -> Image {
+        let mesh = renderer.upload_mesh(&painted_cube()).expect("valid");
+        let material = renderer.create_material(&MaterialDesc {
+            base_color: [brightness, brightness, brightness, 1.0],
+            ..MaterialDesc::default()
+        });
+        let view = look_at([0.0, 0.5, 4.0], [0.0, 0.5, 0.0], [0.0, 1.0, 0.0]);
+        let projection = perspective(60f32.to_radians(), WIDTH as f32 / HEIGHT as f32, 0.1, 50.0);
+        let mut frame = RenderFrame::new(mul(&projection, &view), Color::BLACK);
+        frame.light.intensity = light_intensity;
+        frame.post = PostSettings {
+            bloom,
+            ..PostSettings::default()
+        };
+        frame.push(DrawCommand {
+            mesh,
+            material,
+            model: IDENTITY,
+            normal_matrix: IDENTITY,
+        });
+        renderer.render_to_image(&frame).expect("reads back")
+    }
+
+    fn brightness_at(image: &Image, (x, y): (u32, u32)) -> u32 {
+        let [r, g, b, _] = image.pixel(x, y).expect("in bounds");
+        u32::from(r) + u32::from(g) + u32::from(b)
+    }
+
+    fn on() -> Bloom {
+        Bloom {
+            intensity: 0.3,
+            threshold: 1.0,
+            knee: 0.5,
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a GPU adapter and driver"]
+    fn bright_light_bleeds_past_its_edges() {
+        let mut renderer = headless();
+        let without = glowing_cube(&mut renderer, 8.0, 1.0, Bloom::default());
+        let with = glowing_cube(&mut renderer, 8.0, 1.0, on());
+        assert_eq!(
+            brightness_at(&without, HALO),
+            0,
+            "nothing is drawn there without bloom"
+        );
+        assert!(
+            brightness_at(&with, HALO) > 0,
+            "bloom lights the black around a bright cube"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires a GPU adapter and driver"]
+    fn light_below_the_threshold_does_not_bloom() {
+        let mut renderer = headless();
+        let without = glowing_cube(&mut renderer, 0.3, 1.0, Bloom::default());
+        let with = glowing_cube(&mut renderer, 0.3, 1.0, on());
+        if let Err(mismatch) = golden::compare(&without, &with, 1) {
+            panic!("a dim scene changed under bloom: {mismatch}");
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a GPU adapter and driver"]
+    fn four_times_the_light_gives_a_brighter_halo() {
+        let mut renderer = headless();
+        let dim = glowing_cube(&mut renderer, 8.0, 1.0, on());
+        let bright = glowing_cube(&mut renderer, 8.0, 4.0, on());
+        let (dim_halo, bright_halo) = (brightness_at(&dim, HALO), brightness_at(&bright, HALO));
+        assert!(
+            bright_halo > dim_halo,
+            "halo {bright_halo} at 4x light, {dim_halo} at 1x"
+        );
+        assert!(bright_halo < 3 * 255, "and the halo is not clipped to white");
+    }
+}

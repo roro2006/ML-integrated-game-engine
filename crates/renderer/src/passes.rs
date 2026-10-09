@@ -23,6 +23,12 @@ use crate::registry::DrawPlan;
 use crate::{RenderError, RenderFrame, Renderer};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BloomStep {
+    Down { prefilter: bool },
+    Up,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExposureStep {
     Histogram,
     Average,
@@ -102,8 +108,13 @@ impl Renderer {
                 self.exposure_pass(context, hdr, auto, ExposureStep::Average)
             });
         }
-        graph.add_pass("tonemap", &[hdr], &[surface], move |context| {
-            self.tonemap_pass(context, hdr, surface)
+        let bloom = self.declare_bloom(&mut graph, hdr, &frame.post.bloom);
+        let tonemap_reads: &[ResourceId] = match bloom {
+            Some(first) => &[hdr, first],
+            None => &[hdr],
+        };
+        graph.add_pass("tonemap", tonemap_reads, &[surface], move |context| {
+            self.tonemap_pass(context, hdr, bloom, surface)
         });
         if let Some(count) = debug_vertices {
             graph.add_pass("debug-lines", &[depth, surface], &[surface], move |context| {
@@ -239,9 +250,16 @@ impl Renderer {
         &self,
         context: &mut PassContext,
         hdr: ResourceId,
+        bloom: Option<ResourceId>,
         surface: ResourceId,
     ) -> Result<(), String> {
         let hdr_view = context.view(hdr)?;
+        // With bloom off the scene stands in for it: the intensity is 0, so it
+        // adds nothing, and no black texture has to be kept for the purpose.
+        let bloom_view = match bloom {
+            Some(first) => context.view(first)?,
+            None => hdr_view.clone(),
+        };
         let surface_view = context.view(surface)?;
         // Built per frame: the scene view comes from the pool and is only
         // stable between resizes. Caching it with the pooled texture is noted
@@ -261,6 +279,14 @@ impl Renderer {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: self.exposure.exposure_uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&bloom_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Sampler(&self.bloom.sampler),
                 },
             ],
         });
@@ -282,6 +308,127 @@ impl Renderer {
             multiview_mask: None,
         });
         pass.set_pipeline(&self.tonemap_pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+        pass.draw(0..3, 0..1);
+        Ok(())
+    }
+
+    /// Declares the bloom chain, if bloom is on, and returns its first level,
+    /// which holds the whole chain's light once the upsamples have run.
+    fn declare_bloom<'a>(
+        &'a self,
+        graph: &mut RenderGraph<'a, PassContext>,
+        hdr: ResourceId,
+        settings: &crate::Bloom,
+    ) -> Option<ResourceId> {
+        const LEVELS: [&str; 6] = ["bloom-0", "bloom-1", "bloom-2", "bloom-3", "bloom-4", "bloom-5"];
+        const DOWN: [&str; 6] = [
+            "bloom-down-0",
+            "bloom-down-1",
+            "bloom-down-2",
+            "bloom-down-3",
+            "bloom-down-4",
+            "bloom-down-5",
+        ];
+        const UP: [&str; 6] = [
+            "bloom-up-0",
+            "bloom-up-1",
+            "bloom-up-2",
+            "bloom-up-3",
+            "bloom-up-4",
+            "bloom-up-5",
+        ];
+
+        if !crate::post::bloom::enabled(settings) {
+            return None;
+        }
+        let (width, height) = self.size;
+        let levels: Vec<ResourceId> = crate::post::bloom::level_sizes(width, height)
+            .into_iter()
+            .zip(LEVELS)
+            .map(|((level_width, level_height), name)| {
+                graph.create(
+                    name,
+                    TransientDesc {
+                        format: HDR_FORMAT,
+                        width: level_width,
+                        height: level_height,
+                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                    },
+                )
+            })
+            .collect();
+        for (index, &level) in levels.iter().enumerate() {
+            let source = if index == 0 { hdr } else { levels[index - 1] };
+            let prefilter = index == 0;
+            graph.add_pass(DOWN[index], &[source], &[level], move |context| {
+                self.bloom_pass(context, source, level, BloomStep::Down { prefilter })
+            });
+        }
+        for index in (0..levels.len().saturating_sub(1)).rev() {
+            let (smaller, target) = (levels[index + 1], levels[index]);
+            graph.add_pass(UP[index], &[smaller, target], &[target], move |context| {
+                self.bloom_pass(context, smaller, target, BloomStep::Up)
+            });
+        }
+        levels.first().copied()
+    }
+
+    fn bloom_pass(
+        &self,
+        context: &mut PassContext,
+        source: ResourceId,
+        target: ResourceId,
+        step: BloomStep,
+    ) -> Result<(), String> {
+        let resources = &self.bloom;
+        let source_view = context.view(source)?;
+        let target_view = context.view(target)?;
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bloom-bind-group"),
+            layout: &resources.layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&source_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&resources.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: resources.params.as_entire_binding(),
+                },
+            ],
+        });
+        let (pipeline, load) = match step {
+            BloomStep::Down { prefilter: true } => {
+                (&resources.prefilter, wgpu::LoadOp::Clear(wgpu::Color::BLACK))
+            }
+            BloomStep::Down { prefilter: false } => {
+                (&resources.downsample, wgpu::LoadOp::Clear(wgpu::Color::BLACK))
+            }
+            // Upsamples add onto what the downsample left there.
+            BloomStep::Up => (&resources.upsample, wgpu::LoadOp::Load),
+        };
+        let mut pass = context.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("bloom-pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &target_view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
         pass.draw(0..3, 0..1);
         Ok(())

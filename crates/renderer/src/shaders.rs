@@ -30,6 +30,9 @@ pub const DEBUG_LINE: &str = "debug_line.wgsl";
 /// The fullscreen pass that tonemaps the HDR scene onto the swapchain.
 pub(crate) const TONEMAP: &str = "tonemap.wgsl";
 
+/// The bloom chain's downsample and upsample.
+pub(crate) const BLOOM: &str = "bloom.wgsl";
+
 /// Automatic exposure: the luminance histogram and its average.
 pub(crate) const EXPOSURE_HISTOGRAM: &str = "exposure_histogram.wgsl";
 
@@ -73,6 +76,7 @@ const EMBEDDED: &[(&str, &str)] = &[
     (MIP_DOWNSAMPLE, shader_file!("mip_downsample.wgsl")),
     (PBR_LIT, shader_file!("pbr_lit.wgsl")),
     (EXPOSURE_HISTOGRAM, shader_file!("exposure_histogram.wgsl")),
+    (BLOOM, shader_file!("bloom.wgsl")),
     (BRDF, shader_file!("brdf.wgsl")),
 ];
 

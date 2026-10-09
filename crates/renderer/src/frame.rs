@@ -258,6 +258,8 @@ pub struct PostSettings {
     /// Automatic exposure, or `None` for the fixed `exposure_ev` alone. With
     /// it on, `exposure_ev` becomes compensation on top of the adapted value.
     pub auto_exposure: Option<AutoExposure>,
+    /// Light bleeding around bright sources. Off by default.
+    pub bloom: Bloom,
 }
 
 impl Default for PostSettings {
@@ -267,6 +269,30 @@ impl Default for PostSettings {
             tonemapper: Tonemapper::default(),
             grade: Grade::default(),
             auto_exposure: None,
+            bloom: Bloom::default(),
+        }
+    }
+}
+
+/// Bloom: scene light above a threshold, blurred wide and added back.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Bloom {
+    /// How much of the blurred light is added; 0 turns bloom off and skips
+    /// its passes. Small values (0.02 to 0.1) read as glow, not haze.
+    pub intensity: f32,
+    /// Scene light where bloom starts, before exposure.
+    pub threshold: f32,
+    /// Width of the soft transition below the threshold, so the cut does
+    /// not show as an edge.
+    pub knee: f32,
+}
+
+impl Default for Bloom {
+    fn default() -> Self {
+        Self {
+            intensity: 0.0,
+            threshold: 1.0,
+            knee: 0.5,
         }
     }
 }

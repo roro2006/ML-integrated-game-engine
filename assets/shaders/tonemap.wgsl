@@ -10,6 +10,10 @@
 //   @group(0) @binding(1)  Post      uniform, one per frame
 //   @group(0) @binding(2)  Exposure  uniform, the adapted luminance left by the
 //                                    auto-exposure passes (unused when off)
+//   @group(0) @binding(3)  bloom     texture_2d<f32>, the bloom chain's first
+//                                    level, or the scene itself when bloom is
+//                                    off (multiplied by an intensity of 0)
+//   @group(0) @binding(4)  sampler   linear, clamp to edge
 //
 // COLOUR SPACE: this pass is where scene-referred linear light becomes a
 // display value. On an sRGB swapchain the GPU applies the sRGB transfer
@@ -42,6 +46,8 @@ const EXPOSURE_KEY: f32 = 0.18;
 @group(0) @binding(0) var hdr: texture_2d<f32>;
 @group(0) @binding(1) var<uniform> post: Post;
 @group(0) @binding(2) var<uniform> exposure: Exposure;
+@group(0) @binding(3) var bloom_texture: texture_2d<f32>;
+@group(0) @binding(4) var bloom_sampler: sampler;
 
 override encode_srgb: bool = false;
 
@@ -54,7 +60,10 @@ fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
 
 @fragment
 fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
-    let stored = finite_scene(textureLoad(hdr, vec2<i32>(position.xy), 0).rgb);
+    // Bloom is scene light, so it joins before exposure and the curve.
+    let uv = position.xy / vec2<f32>(textureDimensions(hdr));
+    let bloom = textureSample(bloom_texture, bloom_sampler, uv).rgb * post.bloom_intensity;
+    let stored = finite_scene(textureLoad(hdr, vec2<i32>(position.xy), 0).rgb + bloom);
     var scale = post.exposure;
     if post.auto_exposure == 1u && exposure.initialised != 0u {
         scale *= EXPOSURE_KEY / max(exposure.luminance, 1e-6);
