@@ -16,22 +16,33 @@
 //! A frame is drawn in two passes that share one render pass and one depth
 //! buffer: opaque geometry, then world-space debug lines that test depth
 //! without writing it (see [`debug_lines`]).
+//!
+//! Frames go to a window's swapchain, or, for a renderer built with
+//! [`Renderer::headless`], to an owned texture that can be read back as an
+//! [`Image`]. Both draw through the same code, which is what makes a readback a
+//! fair stand-in for what a window shows.
 
 mod block_on;
 mod debug_lines;
 mod frame;
+#[cfg(test)]
+mod golden;
+mod image;
 mod material;
 mod mesh;
 mod mesh_data;
 mod pipeline;
 mod registry;
 mod shaders;
+#[cfg(test)]
+mod test_scene;
 mod uniforms;
 
 pub use debug_lines::DebugVertex;
 pub use frame::{
     AmbientLight, DirectionalLight, DrawCommand, MaterialDesc, MaterialHandle, MeshHandle, RenderFrame,
 };
+pub use image::Image;
 pub use mesh::MeshInfo;
 pub use mesh_data::{Aabb, MeshData, MeshDataError, VERTEX_FLOATS, WHITE};
 pub use shaders::{DEBUG_LINE, LIT, ShaderError, ShaderLibrary};
@@ -156,6 +167,9 @@ pub enum RenderError {
         shader: String,
         message: String,
     },
+    /// A frame could not be read back: the renderer draws to a window, the
+    /// frame was skipped, or mapping the copy failed.
+    Readback(String),
 }
 
 impl fmt::Display for RenderError {
@@ -171,6 +185,7 @@ impl fmt::Display for RenderError {
             Self::ShaderCompile { shader, message } => {
                 write!(f, "cannot build a pipeline for {shader}: {message}")
             }
+            Self::Readback(message) => write!(f, "cannot read the frame back: {message}"),
         }
     }
 }
@@ -219,13 +234,35 @@ pub enum FrameOutcome {
 /// frame; the buffer grows from here and is never shrunk.
 const INITIAL_DRAW_CAPACITY: u32 = 64;
 
-/// Owns the GPU device, queue, and swapchain for one window.
+/// The colour format of a headless renderer's target.
+///
+/// sRGB, like the swapchain formats `Renderer::new` prefers, so a readback holds
+/// the same display-encoded bytes a window would show.
+const OFFSCREEN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+
+/// Where frames go.
+#[derive(Debug)]
+enum Output {
+    /// A window's swapchain. `config` holds the current size.
+    Window {
+        surface: wgpu::Surface<'static>,
+        config: wgpu::SurfaceConfiguration,
+    },
+    /// An owned texture that frames can be read back from. `None` while the
+    /// size is zero, since a zero-extent texture is a validation error.
+    Offscreen { texture: Option<wgpu::Texture> },
+}
+
+/// Owns the GPU device, queue, and output (a window's swapchain or an
+/// offscreen texture).
 #[derive(Debug)]
 pub struct Renderer {
-    surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    surface_config: wgpu::SurfaceConfiguration,
+    output: Output,
+    color_format: wgpu::TextureFormat,
+    /// The output's size; zero while a window is minimized.
+    size: (u32, u32),
     adapter_info: AdapterInfo,
 
     shaders: ShaderLibrary,
@@ -270,53 +307,12 @@ impl Renderer {
     where
         W: HasWindowHandle + HasDisplayHandle + Send + Sync + 'static,
     {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: match config.backend {
-                BackendPreference::Auto => wgpu::Backends::PRIMARY,
-                BackendPreference::Vulkan => wgpu::Backends::VULKAN,
-            },
-            ..wgpu::InstanceDescriptor::new_without_display_handle()
-        });
+        let instance = create_instance(config);
         let surface = instance
             .create_surface(window)
             .map_err(|error| RenderError::CreateSurface(error.to_string()))?;
-
-        let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: match config.gpu_preference {
-                GpuPreference::LowPower => wgpu::PowerPreference::LowPower,
-                GpuPreference::HighPerformance => wgpu::PowerPreference::HighPerformance,
-            },
-            compatible_surface: Some(&surface),
-            force_fallback_adapter: false,
-            ..Default::default()
-        }))
-        .map_err(|error| RenderError::NoAdapter(error.to_string()))?;
-
-        let info = adapter.get_info();
-        let adapter_info = AdapterInfo {
-            name: info.name.clone(),
-            backend: info.backend.to_string(),
-            device_kind: match info.device_type {
-                wgpu::DeviceType::IntegratedGpu => DeviceKind::IntegratedGpu,
-                wgpu::DeviceType::DiscreteGpu => DeviceKind::DiscreteGpu,
-                wgpu::DeviceType::VirtualGpu => DeviceKind::VirtualGpu,
-                wgpu::DeviceType::Cpu => DeviceKind::Cpu,
-                wgpu::DeviceType::Other => DeviceKind::Other,
-            },
-            driver: format!("{} {}", info.driver, info.driver_info).trim().to_owned(),
-        };
-
-        // Downlevel limits keep the engine honest about the low-spec target;
-        // they are raised to what the adapter reports for resolution-derived
-        // limits only.
-        let required_limits = wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits());
-        let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("engine-device"),
-            required_features: wgpu::Features::empty(),
-            required_limits,
-            ..Default::default()
-        }))
-        .map_err(|error| RenderError::RequestDevice(error.to_string()))?;
+        let adapter = request_adapter(&instance, config, Some(&surface))?;
+        let (device, queue) = request_device(&adapter)?;
 
         let capabilities = surface.get_capabilities(&adapter);
         let format = capabilities
@@ -347,7 +343,61 @@ impl Renderer {
             alpha_mode,
             view_formats: Vec::new(),
         };
+        let output = Output::Window {
+            surface,
+            config: surface_config,
+        };
+        Self::assemble(
+            device,
+            queue,
+            adapter_info(&adapter),
+            output,
+            format,
+            (width, height),
+        )
+    }
 
+    /// Creates a renderer with no window, drawing into an offscreen texture of
+    /// `width` by `height` that [`render_to_image`](Self::render_to_image) reads
+    /// back.
+    ///
+    /// For golden-image tests and tools. Device limits and every pipeline are
+    /// the same as for a window. Adapter selection follows the same preference
+    /// but has no surface to match, so on a machine with two GPUs it may pick a
+    /// different one than a windowed run; check [`adapter_info`](Self::adapter_info).
+    ///
+    /// A size larger than the device's largest 2D texture is an error rather
+    /// than a validation failure later.
+    pub fn headless(width: u32, height: u32, config: RendererConfig) -> Result<Self, RenderError> {
+        let instance = create_instance(config);
+        let adapter = request_adapter(&instance, config, None)?;
+        let (device, queue) = request_device(&adapter)?;
+        let max = device.limits().max_texture_dimension_2d;
+        if width > max || height > max {
+            return Err(RenderError::UnsupportedSurface(format!(
+                "{width}x{height} exceeds the largest texture this device supports ({max})"
+            )));
+        }
+        let output = Output::Offscreen { texture: None };
+        Self::assemble(
+            device,
+            queue,
+            adapter_info(&adapter),
+            output,
+            OFFSCREEN_FORMAT,
+            (width, height),
+        )
+    }
+
+    /// Builds the pipelines and per-frame resources shared by every output.
+    fn assemble(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        adapter_info: AdapterInfo,
+        output: Output,
+        color_format: wgpu::TextureFormat,
+        size: (u32, u32),
+    ) -> Result<Self, RenderError> {
         // Shaders start embedded. Hot reload is opt-in through
         // `enable_shader_hot_reload`, so a renderer is always constructible from
         // the binary alone and a missing asset directory cannot stop startup.
@@ -364,7 +414,7 @@ impl Renderer {
                 .source(shaders::LIT)
                 .map_err(RenderError::Shader)?
                 .into_owned();
-            pipeline::create_pipeline(&device, &pipeline_layout, &source, surface_config.format).map_err(
+            pipeline::create_pipeline(&device, &pipeline_layout, &source, color_format).map_err(
                 |message| RenderError::ShaderCompile {
                     shader: shaders::LIT.to_owned(),
                     message,
@@ -387,11 +437,12 @@ impl Renderer {
                 .source(shaders::DEBUG_LINE)
                 .map_err(RenderError::Shader)?
                 .into_owned();
-            debug_lines::create_pipeline(&device, &debug_pipeline_layout, &source, surface_config.format)
-                .map_err(|message| RenderError::ShaderCompile {
+            debug_lines::create_pipeline(&device, &debug_pipeline_layout, &source, color_format).map_err(
+                |message| RenderError::ShaderCompile {
                     shader: shaders::DEBUG_LINE.to_owned(),
                     message,
-                })?
+                },
+            )?
         };
         let debug_vertex_buffer =
             debug_lines::create_vertex_buffer(&device, debug_lines::INITIAL_VERTEX_CAPACITY);
@@ -407,10 +458,11 @@ impl Renderer {
             pipeline::create_draw_resources(&device, &draw_layout, draw_stride, INITIAL_DRAW_CAPACITY);
 
         let mut renderer = Self {
-            surface,
             device,
             queue,
-            surface_config,
+            output,
+            color_format,
+            size,
             adapter_info,
             shaders,
             pipeline_layout,
@@ -435,43 +487,77 @@ impl Renderer {
             debug_capacity: debug_lines::INITIAL_VERTEX_CAPACITY,
             debug_staging: Vec::new(),
         };
-        renderer.configure_surface();
+        renderer.configure_output();
         renderer.ensure_depth_view();
         Ok(renderer)
     }
 
-    fn configure_surface(&self) {
-        if self.surface_config.width > 0 && self.surface_config.height > 0 {
-            self.surface.configure(&self.device, &self.surface_config);
+    /// Configures the swapchain, or rebuilds the offscreen texture, at the
+    /// current size. A zero size configures nothing.
+    fn configure_output(&mut self) {
+        let (width, height) = self.size;
+        match &mut self.output {
+            Output::Window { config, .. } => {
+                config.width = width;
+                config.height = height;
+                self.configure_surface();
+            }
+            Output::Offscreen { texture } => {
+                // An oversized resize leaves no texture, so frames are skipped
+                // and a readback reports it, instead of failing validation.
+                let max = self.device.limits().max_texture_dimension_2d;
+                *texture = pipeline::depth_size(width, height)
+                    .filter(|&(width, height)| width <= max && height <= max)
+                    .map(|(width, height)| {
+                        create_offscreen_texture(&self.device, self.color_format, width, height)
+                    });
+            }
         }
     }
 
-    /// Resizes the swapchain. A zero-sized surface is recorded but not configured.
+    /// Reconfigures the swapchain after it was lost or went stale. Does nothing
+    /// for an offscreen output, which cannot go stale.
+    fn configure_surface(&self) {
+        if let Output::Window { surface, config } = &self.output
+            && config.width > 0
+            && config.height > 0
+        {
+            surface.configure(&self.device, config);
+        }
+    }
+
+    /// Resizes the output. A zero size is recorded but not configured.
     pub fn resize(&mut self, width: u32, height: u32) {
-        if (width, height) == (self.surface_config.width, self.surface_config.height) {
+        if (width, height) == self.size {
             return;
         }
-        self.surface_config.width = width;
-        self.surface_config.height = height;
-        self.configure_surface();
+        self.size = (width, height);
+        self.configure_output();
         // The depth buffer must match the colour attachment exactly, so it is
         // rebuilt here rather than on the next frame. A zero-sized surface
         // leaves it absent instead of attempting a zero-extent texture.
         self.ensure_depth_view();
     }
 
-    /// Rebuilds the depth buffer if it no longer matches the surface.
+    /// Rebuilds the depth buffer if it no longer matches the output.
     fn ensure_depth_view(&mut self) {
-        let size = (self.surface_config.width, self.surface_config.height);
-        if self.depth_size == size && self.depth_view.is_some() {
+        if self.depth_size == self.size && self.depth_view.is_some() {
             return;
         }
-        self.depth_view = pipeline::create_depth_view(&self.device, size.0, size.1);
-        self.depth_size = size;
+        // Larger than the device allows is treated like zero: no depth buffer,
+        // so frames are skipped rather than failing validation.
+        let max = self.device.limits().max_texture_dimension_2d;
+        let (width, height) = self.size;
+        self.depth_view = if width <= max && height <= max {
+            pipeline::create_depth_view(&self.device, width, height)
+        } else {
+            None
+        };
+        self.depth_size = self.size;
     }
 
     pub fn surface_size(&self) -> (u32, u32) {
-        (self.surface_config.width, self.surface_config.height)
+        self.size
     }
 
     pub fn adapter_info(&self) -> &AdapterInfo {
@@ -573,16 +659,12 @@ impl Renderer {
             .source(shaders::LIT)
             .map_err(RenderError::Shader)?
             .into_owned();
-        pipeline::create_pipeline(
-            &self.device,
-            &self.pipeline_layout,
-            &source,
-            self.surface_config.format,
+        pipeline::create_pipeline(&self.device, &self.pipeline_layout, &source, self.color_format).map_err(
+            |message| RenderError::ShaderCompile {
+                shader: shaders::LIT.to_owned(),
+                message,
+            },
         )
-        .map_err(|message| RenderError::ShaderCompile {
-            shader: shaders::LIT.to_owned(),
-            message,
-        })
     }
 
     fn build_debug_pipeline(&mut self) -> Result<wgpu::RenderPipeline, RenderError> {
@@ -595,7 +677,7 @@ impl Renderer {
             &self.device,
             &self.debug_pipeline_layout,
             &source,
-            self.surface_config.format,
+            self.color_format,
         )
         .map_err(|message| RenderError::ShaderCompile {
             shader: shaders::DEBUG_LINE.to_owned(),
@@ -659,17 +741,30 @@ impl Renderer {
         self.debug_capacity = capacity;
     }
 
-    /// Asks the swapchain for the texture this frame draws into.
-    fn acquire_surface(&self) -> Result<Acquired, RenderError> {
-        Ok(match self.surface.get_current_texture() {
+    /// The texture this frame draws into: the swapchain's next image, or the
+    /// offscreen texture.
+    fn acquire(&self) -> Result<Acquired, RenderError> {
+        let surface = match &self.output {
+            Output::Window { surface, .. } => surface,
+            Output::Offscreen { texture } => {
+                return Ok(match texture {
+                    Some(texture) => Acquired::Ready {
+                        target: Target::Offscreen(texture.clone()),
+                        suboptimal: false,
+                    },
+                    None => Acquired::Skipped(SkipReason::ZeroSizedSurface),
+                });
+            }
+        };
+        Ok(match surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(texture) => Acquired::Ready {
-                texture,
+                target: Target::Surface(texture),
                 suboptimal: false,
             },
             // Presentable, but the swapchain no longer matches the surface:
             // present this frame, then reconfigure for the next one.
             wgpu::CurrentSurfaceTexture::Suboptimal(texture) => Acquired::Ready {
-                texture,
+                target: Target::Surface(texture),
                 suboptimal: true,
             },
             wgpu::CurrentSurfaceTexture::Timeout => Acquired::Skipped(SkipReason::SurfaceTimeout),
@@ -692,7 +787,7 @@ impl Renderer {
     /// culled and ordered; the backend writes the uniforms and records the
     /// draws in exactly the order given.
     pub fn render(&mut self, frame: &RenderFrame) -> Result<FrameOutcome, RenderError> {
-        if self.surface_config.width == 0 || self.surface_config.height == 0 {
+        if self.size.0 == 0 || self.size.1 == 0 {
             return Ok(FrameOutcome::Skipped(SkipReason::ZeroSizedSurface));
         }
         let started = Instant::now();
@@ -729,8 +824,8 @@ impl Renderer {
             debug_lines::pack_vertices(&mut self.debug_staging, vertices);
         }
 
-        let (surface_texture, suboptimal) = match self.acquire_surface()? {
-            Acquired::Ready { texture, suboptimal } => (texture, suboptimal),
+        let (target, suboptimal) = match self.acquire()? {
+            Acquired::Ready { target, suboptimal } => (target, suboptimal),
             Acquired::Skipped(reason) => return Ok(FrameOutcome::Skipped(reason)),
         };
 
@@ -754,9 +849,7 @@ impl Renderer {
                 .write_buffer(&self.debug_vertex_buffer, 0, &self.debug_staging);
         }
 
-        let view = surface_texture
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+        let view = target.view();
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -826,10 +919,7 @@ impl Renderer {
             }
         }
         self.queue.submit(std::iter::once(encoder.finish()));
-        self.queue.present(surface_texture);
-        if suboptimal {
-            self.configure_surface();
-        }
+        self.finish(target, suboptimal);
 
         Ok(FrameOutcome::Presented(FrameStats {
             draw_calls: draw_count,
@@ -845,18 +935,16 @@ impl Renderer {
     /// Kept alongside [`render`](Self::render) for callers that have no scene to
     /// draw yet, and for the startup path before any content is loaded.
     pub fn render_clear(&mut self, color: Color) -> Result<FrameOutcome, RenderError> {
-        if self.surface_config.width == 0 || self.surface_config.height == 0 {
+        if self.size.0 == 0 || self.size.1 == 0 {
             return Ok(FrameOutcome::Skipped(SkipReason::ZeroSizedSurface));
         }
         let started = Instant::now();
-        let (surface_texture, suboptimal) = match self.acquire_surface()? {
-            Acquired::Ready { texture, suboptimal } => (texture, suboptimal),
+        let (target, suboptimal) = match self.acquire()? {
+            Acquired::Ready { target, suboptimal } => (target, suboptimal),
             Acquired::Skipped(reason) => return Ok(FrameOutcome::Skipped(reason)),
         };
 
-        let view = surface_texture
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+        let view = target.view();
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -886,10 +974,7 @@ impl Renderer {
             });
         }
         self.queue.submit(std::iter::once(encoder.finish()));
-        self.queue.present(surface_texture);
-        if suboptimal {
-            self.configure_surface();
-        }
+        self.finish(target, suboptimal);
 
         Ok(FrameOutcome::Presented(FrameStats {
             draw_calls: 0,
@@ -898,18 +983,223 @@ impl Renderer {
             debug_lines: 0,
         }))
     }
+
+    /// Presents a swapchain image and reconfigures a stale swapchain. An
+    /// offscreen frame needs neither: its texture simply holds the result.
+    fn finish(&self, target: Target, suboptimal: bool) {
+        if let Target::Surface(texture) = target {
+            self.queue.present(texture);
+        }
+        if suboptimal {
+            self.configure_surface();
+        }
+    }
+
+    /// Renders `frame` and reads the result back.
+    ///
+    /// Only a renderer built with [`headless`](Self::headless) has a frame to
+    /// read: a swapchain image is gone once presented. Blocks until the GPU has
+    /// finished, so this is for tests and tools, never the frame loop.
+    pub fn render_to_image(&mut self, frame: &RenderFrame) -> Result<Image, RenderError> {
+        if !matches!(self.output, Output::Offscreen { .. }) {
+            return Err(RenderError::Readback(
+                "only a headless renderer can read its frames back".to_owned(),
+            ));
+        }
+        match self.render(frame)? {
+            FrameOutcome::Presented(_) => self.read_back(),
+            FrameOutcome::Skipped(reason) => Err(RenderError::Readback(format!(
+                "the frame was skipped: {reason:?}"
+            ))),
+        }
+    }
+
+    /// Copies the offscreen texture into a buffer and maps it.
+    fn read_back(&self) -> Result<Image, RenderError> {
+        let Output::Offscreen {
+            texture: Some(texture),
+        } = &self.output
+        else {
+            return Err(RenderError::Readback("there is no offscreen texture".to_owned()));
+        };
+        let (width, height) = self.size;
+        let bytes_per_row = image::padded_bytes_per_row(width);
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("readback"),
+            size: u64::from(bytes_per_row) * u64::from(height),
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("readback-encoder"),
+            });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| {
+            // The receiver outlives the poll below, so a failed send cannot
+            // happen; if it somehow did, `recv` reports it.
+            let _ = sender.send(result);
+        });
+        self.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .map_err(|error| RenderError::Readback(error.to_string()))?;
+        receiver
+            .recv()
+            .map_err(|error| RenderError::Readback(error.to_string()))?
+            .map_err(|error| RenderError::Readback(error.to_string()))?;
+
+        let rgba8 = {
+            let mapped = buffer
+                .get_mapped_range(..)
+                .map_err(|error| RenderError::Readback(error.to_string()))?;
+            image::unpad_rows(&mapped, width, height)
+        };
+        buffer.unmap();
+        // A short buffer would otherwise become a short image, which a golden
+        // comparison of the common prefix could pass.
+        let expected = width as usize * height as usize * image::BYTES_PER_PIXEL;
+        if rgba8.len() != expected {
+            return Err(RenderError::Readback(format!(
+                "read {} bytes where {width}x{height} needs {expected}",
+                rgba8.len()
+            )));
+        }
+        Ok(Image { width, height, rgba8 })
+    }
 }
 
-/// The outcome of asking the swapchain for a texture to draw into.
+/// The outcome of asking the output for a texture to draw into.
 #[derive(Debug)]
 enum Acquired {
     Ready {
-        texture: wgpu::SurfaceTexture,
+        target: Target,
         /// The swapchain presented but no longer matches the surface, so it is
         /// reconfigured after this frame rather than before it.
         suboptimal: bool,
     },
     Skipped(SkipReason),
+}
+
+/// The texture one frame draws into.
+#[derive(Debug)]
+enum Target {
+    Surface(wgpu::SurfaceTexture),
+    Offscreen(wgpu::Texture),
+}
+
+impl Target {
+    fn view(&self) -> wgpu::TextureView {
+        let texture = match self {
+            Self::Surface(surface) => &surface.texture,
+            Self::Offscreen(texture) => texture,
+        };
+        texture.create_view(&wgpu::TextureViewDescriptor::default())
+    }
+}
+
+fn create_instance(config: RendererConfig) -> wgpu::Instance {
+    wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: match config.backend {
+            BackendPreference::Auto => wgpu::Backends::PRIMARY,
+            BackendPreference::Vulkan => wgpu::Backends::VULKAN,
+        },
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
+    })
+}
+
+fn request_adapter(
+    instance: &wgpu::Instance,
+    config: RendererConfig,
+    surface: Option<&wgpu::Surface<'_>>,
+) -> Result<wgpu::Adapter, RenderError> {
+    block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: match config.gpu_preference {
+            GpuPreference::LowPower => wgpu::PowerPreference::LowPower,
+            GpuPreference::HighPerformance => wgpu::PowerPreference::HighPerformance,
+        },
+        compatible_surface: surface,
+        force_fallback_adapter: false,
+        ..Default::default()
+    }))
+    .map_err(|error| RenderError::NoAdapter(error.to_string()))
+}
+
+fn request_device(adapter: &wgpu::Adapter) -> Result<(wgpu::Device, wgpu::Queue), RenderError> {
+    // Downlevel limits keep the engine honest about the low-spec target;
+    // they are raised to what the adapter reports for resolution-derived
+    // limits only.
+    let required_limits = wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits());
+    block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("engine-device"),
+        required_features: wgpu::Features::empty(),
+        required_limits,
+        ..Default::default()
+    }))
+    .map_err(|error| RenderError::RequestDevice(error.to_string()))
+}
+
+fn adapter_info(adapter: &wgpu::Adapter) -> AdapterInfo {
+    let info = adapter.get_info();
+    AdapterInfo {
+        name: info.name.clone(),
+        backend: info.backend.to_string(),
+        device_kind: match info.device_type {
+            wgpu::DeviceType::IntegratedGpu => DeviceKind::IntegratedGpu,
+            wgpu::DeviceType::DiscreteGpu => DeviceKind::DiscreteGpu,
+            wgpu::DeviceType::VirtualGpu => DeviceKind::VirtualGpu,
+            wgpu::DeviceType::Cpu => DeviceKind::Cpu,
+            wgpu::DeviceType::Other => DeviceKind::Other,
+        },
+        driver: format!("{} {}", info.driver, info.driver_info).trim().to_owned(),
+    }
+}
+
+/// `format` is the renderer's colour format, so the attachment always matches
+/// the pipelines built for it.
+fn create_offscreen_texture(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    width: u32,
+    height: u32,
+) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("offscreen-color"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    })
 }
 
 fn select_present_mode(preference: PresentMode, supported: &[wgpu::PresentMode]) -> wgpu::PresentMode {

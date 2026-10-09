@@ -1,0 +1,2 @@
+# Golden images are raw pixels; never let line-ending conversion touch them.
+tests/fixtures/golden/*.rgba binary
