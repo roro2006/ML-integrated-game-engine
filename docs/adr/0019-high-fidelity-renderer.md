@@ -16,6 +16,8 @@ The reference game was studied only at the level of configuration files and asse
 
 2. **Render graph.** Passes declare the resources they read and write. The graph orders them, rejects cycles with an error rather than a panic, and pools transient targets. It emits no manual barriers; wgpu tracks synchronisation within a queue.
 
+   > **Amended 2026-10-09 (B1, as built).** The graph does not reorder passes: declaration order is execution order, and the graph validates it instead. A pass that reads a transient no earlier pass wrote is an error naming that pass, which is the mistake a sorting graph would report as a cycle. With one wgpu queue and no async compute, reordering would buy nothing and make a frame harder to read. Transients are pooled by exact descriptor and retired after four unused frames; aliasing by lifetime is recorded but not done.
+
 3. **HDR and PBR.** The lit pass writes an HDR target, and tonemapping runs in a final pass. Materials are PBR metallic-roughness with base colour, normal, packed ORM and emissive textures. A small set of master shaders covers the families in `observed-asset-budgets.md` §7, and each material is an instance: a master plus a parameter block, with feature flags for permutations. ADR-0017's flash overlay is kept as a material parameter, so hit cues still work on textured bodies. The lighting path (clustered forward+ or deferred) is chosen by the B2 prototype benchmark and recorded in a later ADR. This ADR does not choose it.
 
 4. **Shadows.** Cascaded shadow maps with caching, 2 cascades on Low, 4 on High and 5 on Epic. Virtual shadow maps are not in scope. The reference configures them and then disables them, so they are not a proven need.

@@ -28,6 +28,7 @@ accepted ADR: supersede it with a new one.
 | [0020](0020-free-camera-and-3d-interaction.md) | Free third-person camera and 3D interaction | Accepted (supersedes ADR-0007 camera and mouse aim; amends ADR-0009) |
 | [0021](0021-open-world-building-and-generated-sites.md) | Open-world cells, snap-piece building, generated sites in saves | Accepted (supersedes PROJECT_CONTEXT §2 world and building non-goals; amends ADR-0007 and ADR-0010) |
 | [0022](0022-skill-based-progression.md) | Skill-based progression | Accepted (amends ADR-0015 and ADR-0018) |
+| [0023](0023-device-limits-and-optional-features.md) | Device limits and optional GPU features | Accepted (amends ADR-0003) |
 
 ## Approved dependencies
 
