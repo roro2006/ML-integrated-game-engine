@@ -1,6 +1,6 @@
 # ADR-0017: Presentation runtime — recipe models, rigid-part animation, VFX, and skillshots
 
-- Status: Accepted
+- Status: Accepted; §3 rigid-parts-only rule superseded by ADR-0020 (skeletal animation in scope)
 - Date: 2026-09-22
 
 ## Context

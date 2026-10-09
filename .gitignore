@@ -12,3 +12,7 @@
 
 # Windows download metadata streams copied through WSL.
 *:Zone.Identifier
+
+# Planning and reference notes are kept locally, not in the repository.
+/docs/plans/
+/docs/reference/

@@ -10,7 +10,7 @@
 
 Build a from-scratch Rust game engine and data-driven runtime for persistent worlds where trusted game systems, human authors, and AI-assisted tooling can create and modify content safely. The engine must support AI-assisted generation of quests, narrative branches, maps, encounters, enemies, missions, and visual variants while preserving mechanical validity, performance, determinism where needed, save compatibility, and player agency.
 
-The first validation game is a compact, low-poly fantasy action-RPG vertical slice inspired by the high-level gameplay loop of games such as Dimraeth: exploration, combat, quests, gathering, crafting, settlement progression, factions, and persistent world consequences.
+The first validation game is a free-form, third-person survival and crafting sandbox vertical slice, single-player first, inspired by the high-level gameplay loop of games such as Dimraeth: exploration, combat, quests, gathering, crafting, settlement progression, factions, and persistent world consequences. Building, gathering, skill-based progression, crafting, and combat form one system, with combat one part among several. The AI-content pipeline (generated dungeons, sites, and quests) runs on top of the open world. The visual target is high-fidelity PBR rendering, with a Low tier for integrated graphics.
 
 This is not initially a general replacement for mature engines. It is a focused, extensible engine architecture that proves safe AI-native content creation in a playable single-player RPG. Engine scope is driven by what the vertical slice needs, not by feature parity with Bevy, Unity, Godot, or Unreal.
 
@@ -24,7 +24,7 @@ This is not initially a general replacement for mature engines. It is a focused,
 4. Make core gameplay data-driven: quests, enemies, abilities, encounters, items, dialogue, maps, biomes, and visuals must be definable through typed content files.
 5. Support AI as a constrained content planner and authoring assistant, never as an unrestricted runtime code executor.
 6. Make AI-generated content valid through compilation, validation, simulation/dry-runs where practical, approval/activation rules, versioning, and rollback.
-7. Run well on Vulkan-capable integrated graphics.
+7. Run well on the target hardware: the High and Epic tiers target a Radeon RX 7900 XT class GPU at 1440p native or 4K upscaled, 60 fps; the Low tier keeps integrated-GPU and Steam Deck class support at 720p to 900p upscaled, 30 to 40 fps.
 8. Remain fully playable without internet access or any local model installed.
 9. Prefer free, local, privacy-preserving tools and assets where reasonable.
 10. Preserve a clean future path to server-authoritative multiplayer after single-player is proven.
@@ -33,16 +33,16 @@ This is not initially a general replacement for mature engines. It is a focused,
 ### Explicit non-goals for the initial vertical slice
 
 - Multiplayer or online networking implementation.
-- Open-world streaming at large scale.
+- Open-world streaming beyond the 1 km² cell-streamed world (ADR-0021).
 - Fully arbitrary AI-authored native Rust code.
 - Runtime execution of model-generated scripts with unrestricted capabilities.
 - Mandatory cloud services or mandatory AI inference.
 - Runtime image, 3D mesh, music, voice, or video generation.
 - General-purpose editor, full scene editor, or generic reflection UI before text-first content workflows are stable.
 - General-purpose visual scripting or an arbitrary scripting runtime.
-- Freeform voxel building or terrain deformation.
+- Freeform voxel building or terrain deformation (snap-piece building in claimed areas is in scope, per ADR-0021).
 - Broad mod publishing ecosystem before the content format stabilizes.
-- High-fidelity rendering or hardware-intensive visual effects.
+- Hardware ray tracing, virtual shadow maps, or Nanite-style virtualised geometry (ADR-0019).
 - Using Bevy or another game engine/framework as the runtime substrate.
 
 ## 3. Design pillars
@@ -123,13 +123,14 @@ Human-authored runtime content should be typed, serializable, reviewable, and di
 - Content is compiled and validated into an internal runtime registry.
 - Content files are version-controlled and separated from save-specific generated content.
 
-### 3.6 Low-spec native desktop delivery
+### 3.6 Low quality tier and handheld delivery
 
-The game must be practical on low-end integrated graphics on native Windows and Linux, including SteamOS/Linux-forward handheld devices.
+The Low tier keeps the game running on integrated graphics and Steam Deck class hardware on native Windows, Linux, and SteamOS. It is a scalability tier, not the design target (ADR-0019).
 
+- Low targets 720p to 900p upscaled at 30 to 40 fps, with no global illumination, 2 shadow cascades, and volumetric fog kept.
 - Design the game to run well with AI disabled.
-- Target Vulkan-capable integrated graphics.
-- Favor low-poly models, shared materials, simple shaders, small textures, constrained dynamic lighting, and restrained particles.
+- Test the Low tier on integrated hardware through the CI plan (G4).
+- Apply asset budgets (docs/reference/observed-asset-budgets.md, enforced by the asset cooker per tier) and draw-call, texture-memory, and particle budgets on Low. Keep materials shared.
 - Profile early on native Windows, native Linux, and handheld-like performance profiles.
 - Treat memory and bandwidth as shared/limited resources when local inference is active.
 
@@ -140,7 +141,7 @@ The game must be practical on low-end integrated graphics on native Windows and 
 | Language | Rust |
 | Runtime/game engine | Custom Rust engine built from scratch; Bevy is a reference implementation only and not a runtime dependency |
 | Third-party libraries | Narrow plumbing only (windowing, GPU bindings, codecs, audio device, serialization, HTTP, logging, hashing), hidden behind engine-owned interfaces |
-| Primary rendering target | Low-poly 3D or 2.5D, simple forward rendering on Vulkan-capable integrated graphics |
+| Primary rendering target | A high-fidelity PBR 3D renderer on wgpu (ADR-0003, ADR-0019), with a render graph, HDR, PBR metallic-roughness materials, cascaded shadow maps, software global illumination with no hardware ray tracing, and Low, Medium, High and Epic quality tiers |
 | Platforms | Native 64-bit Windows and native 64-bit Linux as first-class targets; SteamOS/Steam Deck-class hardware as low-spec Linux validation target; WSL is a development convenience only |
 | Initial mode | Single-player only |
 | Future multiplayer posture | Design domain state, events, content revisions, and mutations to become server-authoritative later; defer actual networking implementation |
@@ -151,7 +152,7 @@ The game must be practical on low-end integrated graphics on native Windows and 
 | Convenience local backend | Ollama adapter |
 | Cloud model use | Optional, opt-in provider adapter only |
 | No-AI fallback | Deterministic templates, seeded generators, constraint solvers, and authored content |
-| Asset strategy | Primitive-first Blender assets, procedural low-poly props, carefully tracked CC0/free temporary assets |
+| Asset strategy | Original PBR assets authored to the budgets in `docs/reference/observed-asset-budgets.md` (LOD chains, BC7/BC5/ORM texture sets), seeded procedural props, carefully tracked CC0 assets; nothing taken from the reference game (section 11, ADR-0019) |
 | Build/dependency policy | Favor small, focused, maintained Rust crates; no dependency may become the de facto engine core; pin versions and preserve `Cargo.lock` |
 
 ### Relationship to Bevy
@@ -224,8 +225,8 @@ Initial engine capabilities:
 
 - Native desktop application loop on Windows and Linux.
 - Keyboard/mouse input; controller support may follow after the core loop is stable (required before Steam Deck UX validation).
-- A low-poly 3D or 2.5D renderer suitable for a small RPG area.
-- Basic camera, transforms, meshes, materials, directional/ambient lighting, and simple particle/VFX support.
+- A high-fidelity PBR 3D renderer with Low, Medium, High and Epic quality tiers (ADR-0019).
+- Free third-person camera (ADR-0020), transforms, meshes, PBR materials, directional light with sky-based ambient lighting, and simple particle/VFX support.
 - ECS world with entities, sparse component storage, queries, commands/deferred mutation, resources, events, and staged systems.
 - Fixed-timestep gameplay simulation plus variable-rate rendering.
 - Basic collision and simple navigation/pathfinding integration.
@@ -233,6 +234,7 @@ Initial engine capabilities:
 - Canonical domain state, events, saves, replay, and generated-content revisions.
 - Debug overlay, logging, profiling counters, and headless validation/testing where possible.
 - Explicit engine path services for config, cache, logs, saves, and assets.
+- Skeletal animation: glTF skeletons and clips, GPU skinning, and a data-driven animation state machine (ADR-0020).
 
 Explicitly defer:
 
@@ -241,8 +243,7 @@ Explicitly defer:
 - General-purpose visual scripting.
 - Arbitrary scripting runtime.
 - Generic plugin/reflection systems before the vertical slice requires them.
-- Complex skeletal animation system unless the MVP demands it.
-- Advanced PBR pipeline, ray tracing, complex post-processing, and high-end rendering features.
+- Ray tracing, virtual shadow maps, and Nanite-style virtualised geometry (ADR-0019).
 - Platforms beyond native Windows and Linux (e.g., macOS, consoles, web, mobile).
 - Networking implementation.
 - Runtime generative media pipelines.
@@ -287,37 +288,36 @@ The canonical world state remains the durable model; the ECS is optimized for li
 
 ### 5.4 Renderer requirements
 
-The first renderer must be optimized for clarity, portability, debuggability, and low-spec integrated graphics—not feature completeness.
+The renderer targets high fidelity on the High and Epic tiers and runs the Low tier on integrated graphics, optimized for clarity and debuggability as well as visual quality (ADR-0019).
 
 MVP renderer capabilities:
 
-- Vulkan-capable rendering path on native Windows and Linux, directly or through a portable graphics abstraction.
+- wgpu, behind the renderer facade (ADR-0003, ADR-0019), on native Windows and Linux.
 - Window/swapchain management.
-- Mesh buffers for low-poly static and simple dynamic geometry.
+- Mesh buffers for LOD-chain static meshes (4 to 5 levels, per the asset budgets) and simple dynamic geometry, with tangents and vertex colour (ADR-0019, ADR-0011).
 - Transform hierarchy or flat transform representation.
-- Perspective and/or orthographic camera according to final game decision.
-- Basic unlit and lit materials.
-- Directional light plus ambient/hemisphere lighting.
-- Optional limited point lights.
+- Free third-person perspective camera (ADR-0020).
+- PBR metallic-roughness materials, with unlit debug materials.
+- Cascaded shadows for a directional light, with sky-based ambient lighting (ADR-0019).
+- Clustered local lights.
 - Simple transparent materials and particles.
 - Frustum culling.
-- Texture loading and basic texture atlas support.
+- Texture loading with block-compressed formats and mips (ADR-0019 texture rules).
 - Debug primitives: lines, bounding boxes, nav/path visualization, text/overlay hooks.
 - GPU and CPU timing counters where backend support permits.
 
-Renderer non-goals:
+Renderer non-goals (ADR-0019):
 
-- Full PBR feature parity.
-- Deferred renderer unless profiling demonstrates a need.
-- Complex render graph abstraction before multiple passes exist.
+- Hardware ray tracing.
+- Virtual shadow maps.
+- Nanite-style virtualised geometry; classic LOD chains are used instead.
 - Shader graph editor.
-- Ray tracing.
-- Volumetrics, screen-space effects, expensive global illumination, or heavy post-processing.
+- Virtual textures (design note only).
 
 Rendering budget principles:
 
-- Default to simple forward rendering.
-- Batch/instance static low-poly props where practical.
+- Lighting path (clustered forward+ or deferred) is chosen by prototype benchmark (ADR-0019).
+- Batch/instance static props and LOD meshes where practical.
 - Share materials aggressively.
 - Limit unique textures/materials and alpha blending.
 - Constrain dynamic light counts.
@@ -372,22 +372,24 @@ A player-character is a Wayfinder helping rebuild a frontier settlement after a 
 ### Slice map and cast
 
 - Hub settlement: `Cinderwake Settlement`.
-- One nearby wilderness lane/region.
-- One generated dungeon instance.
+- Open-world cells around the settlement, streamed around the player (ADR-0021).
+- One generated dungeon instance, kept as an instance (ADR-0021).
+- Generated open-world sites placed into cells by seeded procedural code (ADR-0021).
 - NPCs: a settlement leader, a researcher/quest giver, and a rival-faction representative.
 - Factions: settlers and an old-forest order.
 - Initial crisis: magical corruption is disrupting a water source.
 
 ### Slice gameplay
 
-- Class-based progression in the content schema; the slice ships one fully playable class with a second defined in data (ADR-0007).
-- Fixed-angle 2.5D action-RPG movement and interaction (ADR-0007).
-- One melee attack and one defensive action or dodge.
+- Skill-based progression: use-based skills, with classes as starting presets. The slice ships one fully playable preset and a second defined in data (ADR-0022, amending ADR-0015 and ADR-0018).
+- Free third-person movement and camera, with interaction by camera-centre ray (ADR-0020).
+- One melee attack and one defensive action or dodge, with 3D hit shapes (ADR-0020).
+- Combat as one system among gathering, crafting, building and survival.
 - Two active abilities.
 - Three regular enemies and one elite/boss variation.
 - Health, stamina or equivalent action resource, damage, loot, inventory, and simple equipment.
 - Five gatherable resources and three craftable recipes.
-- One small settlement-upgrade loop.
+- Snap-piece building in a claimed area (ADR-0021), and one small settlement-upgrade loop.
 - Dialogue choices, faction reputation, and persistent world flags.
 
 ### Slice AI proof
@@ -395,12 +397,14 @@ A player-character is a Wayfinder helping rebuild a frontier settlement after a 
 A meaningful player choice must lead to one of several valid quest branches. A branch should produce:
 
 - A 4–6 objective quest graph composed from approved objectives.
-- A reachable generated/instanced destination.
+- A reachable destination: a generated dungeon instance, or a generated open-world site placed into a cell (ADR-0021).
 - A valid encounter plan within a difficulty budget.
 - Faction-aware dialogue using canonical world facts.
 - A reward package.
 - A persistent world-state delta.
 - A visual recipe using only approved asset/material/VFX libraries.
+
+ADR-0010 safety rules apply unchanged to generated sites and quests.
 
 Example branch directions:
 
@@ -497,6 +501,85 @@ pub enum Effect {
 
 Do not add arbitrary code execution as an ability mechanism. Extend the trusted primitive set deliberately, with tests.
 
+### Skills and XP (illustrative)
+
+Skill progression uses integer ledgers and event-driven updates.
+
+```rust
+pub struct SkillId(pub String);            // content id from skills.ron
+pub struct SkillState { pub xp: u32, pub level: u16 }
+pub struct Progression {
+    pub skills: BTreeMap<SkillId, SkillState>,
+}
+pub enum SkillEvent {
+    SkillExperienceGained { skill: SkillId, amount: u32 },
+    SkillLeveled { skill: SkillId, level: u16 },
+}
+```
+
+Note: XP is an integer ledger. Every XP change is a `SkillExperienceGained` event, and there are no floats on any skill path. A level is recorded when it is reached and is never recomputed on load. Derived values such as gather speed are computed from the level and not stored. This is illustrative, not a frozen API.
+
+### World cells (illustrative)
+
+World state is stored as deltas relative to a deterministic baseline.
+
+```rust
+pub struct CellId { pub x: i32, pub y: i32 }   // grid coordinates
+pub struct CellDelta {
+    pub nodes: BTreeMap<NodeId, NodeState>,
+    pub structures: BTreeMap<StructureId, StructureState>,
+    pub sites: BTreeMap<SiteId, SiteRecord>,
+}
+pub struct WorldState {
+    // ... existing fields ...
+    pub cells: BTreeMap<CellId, CellDelta>,
+}
+```
+
+Note: the seeded baseline of a cell is generated as a pure function of (world seed, cell id, content revision) and is never stored. Saved state is only the delta. A cell with no key in `cells` is untouched. Save size grows with the number of deltas, not with explored area. This is illustrative, not a frozen API.
+
+### Building pieces (illustrative)
+
+Building structures use fixed-point coordinates and explicit socket definitions.
+
+```rust
+pub struct PieceId(pub String);            // content id from pieces.ron
+pub struct StructureId(pub u32);           // unique within its cell; producer takes the next value from the cell's counter, reducer checks it is free
+pub enum SocketKind { WallEdge, FloorEdge, RoofEdge, FoundationTop }   // closed set, defined in Rust
+pub struct Socket { pub kind: SocketKind, pub position_milli: [i32; 3], pub yaw_milli: i32 }
+pub struct StructureState {
+    pub piece: PieceId,
+    pub position_milli: [i32; 3],
+    pub yaw_milli: i32,
+    pub owner: ClaimId,
+    pub hit_points: u32,
+}
+```
+
+Note: the support graph is a derived cache rebuilt from state on load and updated incrementally on place and remove. It is never saved. Collapse order is sorted by `StructureId`. This is illustrative, not a frozen API.
+
+### Generated sites (illustrative)
+
+Generated sites store provenance and player state. Their position comes from the seed.
+
+```rust
+pub struct SiteId(pub String);             // "site-" prefix, minted by code, never by a model
+pub struct SiteProvenance {
+    pub model: String,
+    pub prompt_hash: ContentHash,
+    pub seed: u64,
+    pub content_hash: ContentHash,
+}
+pub struct SiteRecord {
+    pub id: SiteId,
+    pub overlay: Option<SiteOverlay>,      // names and encounter choices; None means template defaults
+    pub provenance: Option<SiteProvenance>,
+    pub state: SiteState,                  // state changes made by the player
+}
+```
+
+Note: a site's position is not saved. Placement code recomputes it from the seed. A site that fails the fit checks is dropped and never recorded. A saved record holds the overlay, provenance and state changes. An overlay that fails validation is replaced by the template default. Provenance is never shown to the player. This is illustrative, not a frozen API.
+
 ## 8. Repository and content structure
 
 Recommended repository organization (exact crate split to be confirmed by ADR; dependency direction must follow Section 5.1):
@@ -517,6 +600,9 @@ Recommended repository organization (exact crate split to be confirmed by ADR; d
 │   ├── ai_gateway/         # local/cloud provider adapters, schemas, queues/cache
 │   ├── game_runtime/       # domain-to-ECS projection, gameplay systems, UI glue
 │   ├── debug_tools/        # debug UI, inspection, replay, content candidate tools
+│   ├── world_stream/       # (planned, D5) CPU cell loader; crate name assumed in renderer workstream
+│   ├── asset_cooker/       # (planned, B6) glTF to cooked mesh and texture pipeline
+│   ├── asset_format/       # (planned, B6) shared cooked-asset format; crate name assumed
 │   └── sample_game/        # Cinderwake vertical slice
 ├── assets/
 │   ├── content/
@@ -530,7 +616,17 @@ Recommended repository organization (exact crate split to be confirmed by ADR; d
 │   │   ├── prefabs/
 │   │   ├── quests/
 │   │   ├── recipes/
-│   │   └── visual_recipes/
+│   │   ├── visual_recipes/
+│   │   ├── skills.ron                # (planned, F5) skill definitions and unlock thresholds
+│   │   ├── xp-rules.ron              # (planned, F5) action XP and daily caps
+│   │   ├── pieces.ron                # (planned, F4) building piece definitions and sockets
+│   │   ├── claims.ron                # (planned, F4) claim decay and upkeep
+│   │   ├── stability.ron             # (planned, F4) support depth and cantilever limits, or folded into pieces.ron
+│   │   ├── resource-nodes.ron        # (planned, F6) gatherable node definitions and yield tables
+│   │   ├── survival.ron              # (planned, F6) survival stat tuning
+│   │   ├── world.ron                 # (planned, F3) cell size, streaming radii, baseline seed salt
+│   │   ├── site-templates.ron        # (planned, F9) generated site templates, bounded by the loader
+│   │   └── generation.ron            # (planned, F9) site density, budgets and spawn-safety radius
 │   ├── models/
 │   ├── materials/
 │   ├── textures/
@@ -702,27 +798,54 @@ cloud_fallback_enabled = false
 
 ### MVP art direction
 
-- Low-poly fantasy with readable silhouettes.
+- High-fidelity PBR (ADR-0019). The exact art style (for example stylised versus realistic) is an open owner decision.
+- Physically based metallic-roughness materials.
+- HDR lighting with tonemapping.
+- Physically based sky, aerial perspective, and height fog.
+- Volumetric fog on every tier.
+- Readable silhouettes.
 - Compact palette per biome and faction.
-- Shared material families and texture atlases.
-- Simple meshes, low draw-call pressure, minimal overdraw.
-- Simple particle effects and limited real-time lights.
-- Visual variation comes from palettes, silhouettes, materials, decals, animation timing, and procedural placement—not dense geometry.
+- Limited real-time lights.
+- Simple particle effects.
+- Classic LOD chains, no Nanite.
+- Default 4 levels (LOD0 to LOD3).
+- 5 levels for architecture, large landscape, and rocks.
+- 1 level for small natural pieces.
+- Reduction ratio 0.5 per level, or 0.7 for base-building.
+- Triangle targets and warn/error limits are in docs/reference/observed-asset-budgets.md section 2c.
+- Textures mostly 1024 to 2048.
+- Max 2048 on High, 1024 on Low.
+- Base colour is BC7 sRGB.
+- Normals are BC5 linear at half the base-colour width, with a floor of 512.
+- ORM (occlusion, roughness, metallic) is packed into one BC1 linear texture.
+- Emissive is a separate BC1 sRGB texture, max 1024.
+- Virtual textures are a design note only, not in scope.
+- Small set of master materials: environment metallic-roughness, character, foliage small and tree, tree trunk, impostor, VFX opaque/translucent/additive, two-sided cloth.
+- Each material is an instance: a master plus a parameter block.
+- Variants are feature flags, not new masters.
+- Cascaded shadows: 2 cascades on Low, 4 on High, 5 on Epic.
+- Global illumination is off on Low.
+- Visual variation comes from palettes, silhouettes, materials, decals, animation timing, and procedural placement.
 
 ### Asset sources
 
-1. Build a primitive-first kit in Blender.
-2. Generate procedural props/environmental variation from deterministic seeds where appropriate.
+1. Original assets only. The reference game is studied for configuration and statistics only; no assets, pixels, or geometry from it are used (clean-room policy, master plan section 3).
+2. Generate procedural props and environmental variation from deterministic seeds where appropriate.
 3. Use explicitly licensed CC0/free assets only when provenance is tracked.
-4. Keep model/texture/audio source and license metadata in an asset manifest.
+4. Keep model, texture, and audio source and license metadata in an asset manifest.
 5. Do not depend on runtime generative-art workflows for the MVP.
 
 ## 12. Performance rules
 
 ### Target frame rates
 
-- Preferred: stable 60 FPS.
-- Handheld/battery fallback: stable 30 FPS mode is acceptable.
+| Tier | Hardware class | Resolution and upscaling | Frame target | Notes |
+| High | Radeon RX 7900 XT class | 1440p native or 4K upscaled | 60 fps, GPU frame time <= 16.6 ms | Full feature set, including GI |
+| Epic | Radeon RX 7900 XT class | 1440p native or 4K upscaled | 60 fps | Highest settings tier; same hardware target as High |
+| Medium | Mid-range discrete GPU | 1080p | 60 fps | Reduced settings |
+| Low | Integrated graphics and Steam Deck class | 720p to 900p, upscaled | 30 to 40 fps | No GI; volumetric fog and shadows kept (2 cascades) |
+
+- Tiers are data. A tier cannot enable a feature the adapter lacks; the profile is reduced and the reduction is reported.
 - AI must not be needed to meet any gameplay or rendering target.
 
 ### Performance constraints
@@ -998,6 +1121,42 @@ No networking implementation yet. Verify:
 - AI changes are atomic transactions suitable for server authority.
 - No gameplay persistence depends on local-only ECS identity.
 
+### M16 — Decisions and reference docs
+
+Deliverables: ADRs 0019 to 0022 approved, this document updated for them, and reference docs A1 and A3 done. Exit criteria: the owner signs off the scope and the conflicts are resolved.
+
+### M17 — Renderer foundation
+
+Deliverables: render graph, HDR, textures, and PBR materials (renderer workstream B1 to B4, E1). Exit criteria: a textured PBR scene with tonemapping runs at 60 fps on an RX 7900 XT class GPU, and the existing slice still runs.
+
+### M18 — Lighting and sky
+
+Deliverables: cascaded shadows, image-based lighting, procedural sky, ambient occlusion, and clustered lights (C1, C2, C4, C5, D3 sky). Exit criteria: a day and night scene with stable shadows, and golden-image tests in CI.
+
+### M19 — Free camera and 3D controller
+
+Deliverables: free third-person camera, 3D character controller, and part of the skeletal animation work (F1, F2, F8 partial). Exit criteria: the player traverses 3D terrain, and the old 2.5D mode can be removed.
+
+### M20 — World
+
+Deliverables: terrain, foliage, water, cell streaming, and the instancing that supports them (D1, D2, D4, D5, F3, B5). Exit criteria: a 1 km² streamed world with instanced foliage, within the frame-time budget.
+
+### M21 — Systems
+
+Deliverables: building, skills, gathering and crafting, and survival (F4 to F6). Exit criteria: a player can build a base, craft gear, and have both persist across save, load, and replay.
+
+### M22 — Combat and AI
+
+Deliverables: 3D combat, skeletal animation, and navmesh pathing (F7, F8). Exit criteria: three enemy types can be fought in the open world.
+
+### M23 — Global illumination and polish
+
+Deliverables: dynamic GI, volumetrics, TAA and an upscaler, particles, and quality tiers (C3, D3, E2 to E5). Exit criteria: the visual target is met in a capture comparison.
+
+### M24 — Integration
+
+Deliverables: AI-content adaptation to the open world, multiplayer readiness, and save migration (F9, F10, G5). Exit criteria: the new vertical slice is playable end to end.
+
 ## 14. Engineering conventions
 
 ### General
@@ -1116,21 +1275,23 @@ These must be resolved before permanently committing to related systems:
 
 All fifteen were resolved on 2026-09-15.
 
-1. ~~Exact camera/perspective.~~ Fixed-angle 2.5D perspective camera (ADR-0007).
-2. ~~Exact combat feel.~~ Souls-lite and deliberate: stamina-gated, committed attacks, dodge i-frames; all timing windows expressed in fixed ticks (ADR-0007).
-3. ~~World topology.~~ Handcrafted hub and wilderness lane plus generated dungeon instances (ADR-0007).
-4. ~~Core-loop priority ranking.~~ Narrative/quests and combat lead; exploration, gathering, crafting, and settlement support them (ADR-0007).
-5. ~~Player progression.~~ Distinct classes in the content schema; the slice ships one fully playable class and a second defined in data but unpolished (ADR-0007).
-6. ~~Death/failure model.~~ Respawn at the settlement, keep progress; no corpse run (ADR-0007).
-7. ~~Settlement building scope.~~ Functional blueprint upgrades from authored slots; no placement tools (ADR-0007).
+1. ~~Exact camera/perspective.~~ Superseded 2026-10-09: free third-person orbit camera (ADR-0020). The earlier fixed-angle 2.5D choice was ADR-0007.
+2. ~~Exact combat feel.~~ Souls-lite and deliberate: stamina-gated, committed attacks, dodge i-frames; all timing windows expressed in fixed ticks (ADR-0007). Amended 2026-10-09: 3D hit shapes and camera-centre aim (ADR-0020).
+3. ~~World topology.~~ Handcrafted hub and wilderness lane plus generated dungeon instances (ADR-0007). Amended 2026-10-09: the open world is cell-streamed, generated sites are placed into cells, and dungeons stay instanced (ADR-0021).
+4. ~~Core-loop priority ranking.~~ Narrative/quests and combat led (ADR-0007). Amended 2026-10-09: a free-form survival and crafting sandbox, with combat as one system among building, gathering, crafting, and survival (master plan section 1, ADR-0020).
+5. ~~Player progression.~~ Superseded 2026-10-09: skill-based progression, with classes as starting presets (ADR-0022, amending ADR-0015 and ADR-0018).
+6. ~~Death/failure model.~~ Respawn at the settlement, keep progress; no corpse run (ADR-0007). Survival failure (zero warmth or food) is still open (gameplay workstream D-h).
+7. ~~Settlement building scope.~~ Superseded 2026-10-09 for claimed areas: snap-piece building, with no freeform voxel building or terrain deformation (ADR-0021, amending ADR-0007).
 8. ~~Player-facing AI visibility.~~ Invisible; provenance recorded in saves but never surfaced (ADR-0010).
-9. ~~Whether AI may create permanent named NPCs, factions, locations, items, and lore.~~ Only inside generated instances, in an instance-scoped ID namespace; promotion to canonical status requires human authoring (ADR-0010).
+9. ~~Whether AI may create permanent named NPCs, factions, locations, items, and lore.~~ Only inside generated instances, in an instance-scoped ID namespace; promotion to canonical status requires human authoring (ADR-0010). Amended 2026-10-09 for persistent open-world sites: their records are saved, while the seed still decides where they are (ADR-0021, owner decision D-a).
 10. ~~Whether player free-form natural-language actions are a near-term goal.~~ No; player input stays bounded (ADR-0010).
 11. ~~Generated content reroll/edit/review controls for players.~~ Developer-only review tooling; no player-facing controls (ADR-0010).
 12. ~~Cloud fallback consent, privacy policy, and optional telemetry policy.~~ Cloud adapter opt-in and disabled by default, never required; no telemetry ever (ADR-0010).
 13. ~~Project intent.~~ Portfolio piece: favour a tight, finished vertical slice over engine breadth.
 14. ~~License choice for code and content.~~ Code dual-licensed `MIT OR Apache-2.0`; assets licensed separately with tracked provenance.
 15. ~~Team size, expected development time, and desired demo duration.~~ Solo and part-time: milestones stay small, independently valuable, and resumable after gaps. Demo target remains a 20–30 minute offline slice, delivered in **M10** rather than M5 (amended 2026-09-18, ADR-0016: mechanics precede the content pass).
+
+Owner decisions of 2026-10-09 (master plan section 9): single-player first, with networking out of scope; the High tier targets an RX 7900 XT class GPU, with a Low fallback tier; the AI-content pipeline stays on top of the open world under the ADR-0010 safety rules.
 
 ### Engine technical decisions
 
@@ -1140,26 +1301,27 @@ Resolve through ADRs and small spikes, not long speculative implementation:
 2. ~~ECS storage: sparse sets only initially versus early archetype support.~~ Resolved 2026-09-15: sparse sets only, see ADR-0005.
 3. ~~ECS execution: single-threaded deterministic schedule first versus staged parallelism.~~ Resolved 2026-09-15: single-threaded deterministic schedule, see ADR-0005.
 4. ~~Math crate/internal math strategy and coordinate conventions.~~ Resolved 2026-09-15: `glam` behind `engine::math`; right-handed, Y-up, −Z forward, metres, `0..1` depth, see ADR-0008.
-5. ~~Physics/collision: minimal internal 2D/3D collision versus narrow external backend.~~ Resolved 2026-09-15: minimal internal collision, see ADR-0009.
-6. ~~Navigation: grid/A* for MVP versus navmesh pathfinding.~~ Resolved 2026-09-15: navmesh with A* plus funnelling; validators run on the navmesh, see ADR-0009.
+5. ~~Physics/collision: minimal internal 2D/3D collision versus narrow external backend.~~ Resolved 2026-09-15: minimal internal collision, see ADR-0009. Amended by ADR-0020: collision now covers terrain heightfields and vertical motion.
+6. ~~Navigation: grid/A* for MVP versus navmesh pathfinding.~~ Resolved 2026-09-15: navmesh with A* plus funnelling; validators run on the navmesh, see ADR-0009. 3D navigation is still open (gameplay workstream F8); ADR-0020 does not decide it.
 7. ~~Audio backend.~~ Resolved 2026-09-15: `cpal` with an engine-owned mixer; decoder crate still to be approved, see ADR-0012.
-8. ~~Asset import approach and shader workflow.~~ Resolved 2026-09-15: glTF source baked to an engine format offline; WGSL hot-reloaded in dev, embedded in release, see ADR-0011.
+8. ~~Asset import approach and shader workflow.~~ Resolved 2026-09-15: glTF source baked to an engine format offline; WGSL hot-reloaded in dev, embedded in release, see ADR-0011. Amended by ADR-0019 (baked meshes carry tangents and vertex colour) and ADR-0020 (skeletal clips baked through the asset cooker).
 9. ~~Window/input crate and controller support timeline.~~ Resolved 2026-09-15: `winit` now, gamepads via a focused crate before Steam Deck validation, see ADR-0004.
 
 (Visual perspective is tracked as product decision 1 above.)
 
+Open after ADR-0019 to ADR-0022:
+
+- Lighting path, clustered forward+ or deferred, chosen by the B2 prototype benchmark (ADR-0019).
+- Global illumination design, chosen by the C3 prototype gate, with a DDGI-style probe grid as the fallback (ADR-0019).
+- Batching of vertex layout changes into one step, and the device limits to request (renderer workstream sections 2 and 6).
+- Gameplay decisions: D-a and D-c are decided 2026-10-09; the other D items in docs/plans/20-gameplay-workstream.md section 5 are open.
+
 ## 17. Immediate next tasks
 
-1. Resolve the highest-impact open decisions in Section 16, especially camera/perspective and the rendering API boundary.
-2. Write the M0 ADRs: engine-from-scratch scope, renderer dependency choice, ECS storage strategy, and platform/input strategy.
-3. Create the Cargo workspace and empty crates matching the structure in Section 8.
-4. Add root-level developer tooling: `rustfmt`, `clippy`, test commands, and Linux and Windows CI.
-5. Implement M1: window, input normalization, frame timing, fixed-timestep accumulator, path services, and diagnostics.
-6. Implement M2: minimal ECS with strong headless tests.
-7. Implement M3: minimal low-poly renderer validated on native Windows and Linux.
-8. Define the first stable `game_core` types (IDs, `WorldState`, `DomainEvent`, versioned save envelope, deterministic seed utilities), a minimal RON content manifest and fixture set, and a headless content loader/validator. These are engine-independent and may progress headlessly alongside M1–M3.
-9. Project a tiny validated `WorldState` into the runtime ECS.
-10. Add a mock AI provider and candidate-content pipeline only after deterministic content loading works.
+1. Install the Rust toolchain on the development machine.
+2. Start Phase 1 (M17, renderer foundation): render graph (B1), HDR pipeline and tonemapping (E1), texture system (B3), and PBR materials (B4), following `docs/plans/10-renderer-workstream.md`.
+3. Capture reference frames with Frame Generation off, and collect RGP timings per pass on the RX 7900 XT, following `docs/reference/capture-plan.md`.
+4. Run a gameplay design pass for F4 (building) and F6 (gathering, crafting, survival), following section 3 of `docs/plans/20-gameplay-workstream.md`.
 
 ## 18. Documentation map
 
@@ -1169,11 +1331,17 @@ Resolve through ADRs and small spikes, not long speculative implementation:
 - Content authoring documentation: `docs/content_authoring/`
 - Milestone/feature plans: `docs/plans/`
 - Test fixtures: `tests/fixtures/`
+- Master plan for high-fidelity rendering and free-form gameplay: `docs/plans/00-master-plan-fidelity-and-freeform.md`
+- Renderer workstream: `docs/plans/10-renderer-workstream.md`
+- Gameplay workstream: `docs/plans/20-gameplay-workstream.md`
+- Test and CI plan: `docs/plans/30-test-and-ci-plan.md`
+- Reference studies (prose specifications from public sources and owned-copy observation; no extracted code, shaders, or assets are committed): `docs/reference/*.md`, currently `ue5-feature-survey.md`, `capture-plan.md`, `gameplay-survey.md`, `observed-asset-budgets.md`, and `observed-settings.md`
 
 ## 19. Change log
 
 | Date | Decision/change | Notes |
 |---|---|---|
+| 2026-10-09 | High-fidelity renderer and free-form gameplay: ADRs 0019 to 0022 accepted; master plan approved; PROJECT_CONTEXT updated | ADR-0019: high-fidelity PBR renderer on wgpu with render graph, HDR, cascaded shadows, software GI, and Low/Medium/High/Epic tiers (amends ADR-0017 and ADR-0011). ADR-0020: free third-person camera, camera-ray interaction, 3D hit shapes, skeletal animation (supersedes the ADR-0007 camera and mouse-aim; amends ADR-0009). ADR-0021: cell streaming, snap-piece building in claimed areas, generated open-world sites saved in cells (amends ADR-0007 and ADR-0010 for open-world sites only). ADR-0022: skill-based progression with classes as presets (amends ADR-0015 and ADR-0018). Single-player first is unchanged. Milestones M16 to M24 added. |
 | 2026-09-15 | Initial source-of-truth document created | Single-player first; local-first optional AI; Bevy/Rust; Linux/SteamOS and low-end integrated graphics; text-first ECS-driven workflow; low-poly MVP assets |
 | 2026-09-15 | Engine-from-scratch decision accepted | Bevy is a reference implementation only; no Bevy runtime dependency |
 | 2026-09-15 | M0 workspace, tooling, and ADRs 0001–0006 created | Crate layout per Section 8; `rustfmt`/`clippy`/CI for Linux and Windows; `unsafe_code` forbidden workspace-wide |

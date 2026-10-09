@@ -24,6 +24,10 @@ accepted ADR: supersede it with a new one.
 | [0016](0016-mechanics-first-milestone-order.md) | Mechanics-first milestone order | Accepted |
 | [0017](0017-presentation-runtime.md) | Presentation runtime: recipe models, rigid-part animation, VFX, skillshots | Accepted |
 | [0018](0018-builds-talents-and-ability-loadout.md) | Builds: one class, five-slot loadout, talents, item empowerment | Accepted |
+| [0019](0019-high-fidelity-renderer.md) | High-fidelity renderer: render graph, PBR, shadows, global illumination, quality tiers | Accepted (supersedes PROJECT_CONTEXT §2 and §5.4 rendering non-goals) |
+| [0020](0020-free-camera-and-3d-interaction.md) | Free third-person camera and 3D interaction | Accepted (supersedes ADR-0007 camera and mouse aim; amends ADR-0009) |
+| [0021](0021-open-world-building-and-generated-sites.md) | Open-world cells, snap-piece building, generated sites in saves | Accepted (supersedes PROJECT_CONTEXT §2 world and building non-goals; amends ADR-0007 and ADR-0010) |
+| [0022](0022-skill-based-progression.md) | Skill-based progression | Accepted (amends ADR-0015 and ADR-0018) |
 
 ## Approved dependencies
 

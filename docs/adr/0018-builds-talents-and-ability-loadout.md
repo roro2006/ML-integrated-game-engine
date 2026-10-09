@@ -1,6 +1,6 @@
 # ADR-0018: Builds — one class, a five-slot loadout, talents, and item empowerment
 
-- Status: Accepted
+- Status: Accepted; amended by ADR-0022
 - Date: 2026-09-23 (accepted the same day)
 - Amends: ADR-0007 (progression), ADR-0013 (save format 1 → 2)
 

@@ -1,6 +1,6 @@
 # ADR-0007: Vertical-slice game design decisions
 
-- Status: Accepted
+- Status: Accepted; camera and combat input superseded by ADR-0020; "no spatial data in saves" and "no placement tools" amended by ADR-0021
 - Date: 2026-09-15
 
 ## Context

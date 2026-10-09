@@ -1,6 +1,6 @@
 # ADR-0015: Character classes are content, and `ClassChosen` carries the pools
 
-- Status: accepted
+- Status: accepted; amended by ADR-0022 (classes become loadout presets)
 - Date: 2026-09-17
 - Supersedes: none
 

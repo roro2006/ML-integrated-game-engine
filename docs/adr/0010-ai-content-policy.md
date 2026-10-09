@@ -1,6 +1,6 @@
 # ADR-0010: AI content policy — visibility, permanence, and boundaries
 
-- Status: Accepted
+- Status: Accepted; permanence rule amended for open-world sites by ADR-0021 (safety rules unchanged)
 - Date: 2026-09-15
 
 > **Numbering note (2026-09-22).** Milestone numbers below predate two renumberings

@@ -1,6 +1,6 @@
 # ADR-0009: Collision and navigation
 
-- Status: Accepted
+- Status: Accepted; collision scope amended by ADR-0020
 - Date: 2026-09-15
 
 > **Numbering note (2026-09-22).** Milestone numbers below predate two renumberings
