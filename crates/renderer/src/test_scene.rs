@@ -352,6 +352,7 @@ fn the_tonemap_pass_matches_its_cpu_mirror() {
                 exposure_ev,
                 tonemapper,
                 grade,
+                ..PostSettings::default()
             };
             for scene in scenes {
                 let mut frame = RenderFrame::new(
@@ -373,6 +374,45 @@ fn the_tonemap_pass_matches_its_cpu_mirror() {
                 }
             }
         }
+    }
+}
+
+/// E1 auto-exposure: a dim and a bright uniform scene both come out at mid
+/// grey once exposure has adapted, here instantly. The bright one follows the
+/// dim one, so adaptation is seen going both ways in a running renderer.
+#[test]
+#[ignore = "requires a GPU adapter and driver"]
+fn auto_exposure_brings_any_uniform_scene_to_mid_grey() {
+    use crate::post::exposure::KEY;
+    use crate::post::tonemap::mirror::display_code;
+    use crate::{AutoExposure, PostSettings};
+
+    let mut renderer = headless();
+    let auto = AutoExposure {
+        brighten_speed: f32::INFINITY,
+        darken_speed: f32::INFINITY,
+        ..AutoExposure::default()
+    };
+    let settings = PostSettings {
+        exposure_ev: 0.0,
+        auto_exposure: Some(auto),
+        ..PostSettings::default()
+    };
+    let manual = PostSettings {
+        exposure_ev: 0.0,
+        ..PostSettings::default()
+    };
+    let [expected, ..] = display_code([KEY; 3], &manual);
+    for grey in [0.5f64, 8.0, 0.5] {
+        let mut frame = RenderFrame::new(IDENTITY, Color::rgb(grey, grey, grey));
+        frame.post = settings;
+        let image = renderer.render_to_image(&frame).expect("reads back");
+        let [r, ..] = image.pixel(WIDTH / 2, HEIGHT / 2).expect("in bounds");
+        // One histogram bin is 16/254 of a stop, about 4.5 percent of light.
+        assert!(
+            r.abs_diff(expected) <= 3,
+            "grey {grey} shows as {r}, mid grey is {expected}"
+        );
     }
 }
 

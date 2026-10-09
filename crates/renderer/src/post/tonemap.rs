@@ -143,6 +143,7 @@ pub(crate) fn post_bytes(settings: &PostSettings) -> [u8; POST_UNIFORM_SIZE] {
     let mut out = [0; POST_UNIFORM_SIZE];
     out[0..4].copy_from_slice(&exposure_scale(settings.exposure_ev).to_le_bytes());
     out[4..8].copy_from_slice(&operator(settings.tonemapper).to_le_bytes());
+    out[12..16].copy_from_slice(&u32::from(settings.auto_exposure.is_some()).to_le_bytes());
     let grade = settings.grade;
     let inverse_gamma = grade.gamma.map(|gamma| 1.0 / sanitised_gamma(gamma));
     for (offset, values) in [(16, grade.lift), (32, inverse_gamma), (48, grade.gain)] {
@@ -177,7 +178,8 @@ pub(crate) fn encodes_in_shader(format: wgpu::TextureFormat) -> bool {
     !format.is_srgb()
 }
 
-/// Group 0: the HDR scene texture and the `Post` uniform.
+/// Group 0: the HDR scene texture, the `Post` uniform, and the adapted
+/// exposure the auto-exposure passes leave.
 pub(crate) fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("tonemap-layout"),
@@ -200,6 +202,16 @@ pub(crate) fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout 
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
                     min_binding_size: wgpu::BufferSize::new(POST_UNIFORM_SIZE as u64),
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(super::exposure::STATE_SIZE as u64),
                 },
                 count: None,
             },
@@ -373,6 +385,7 @@ mod tests {
                 gamma: [2.0, 1.0, 1.0],
                 gain: [1.0, 1.0, 0.5],
             },
+            auto_exposure: None,
         });
         assert_eq!(f32_at(&bytes, 0), 2.0);
         assert_eq!(u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]), 1);

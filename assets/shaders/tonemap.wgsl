@@ -7,7 +7,9 @@
 // Bind group layout (the pipeline must match this exactly):
 //
 //   @group(0) @binding(0)  hdr   texture_2d<f32>, the lit scene, linear
-//   @group(0) @binding(1)  Post  uniform, one per frame
+//   @group(0) @binding(1)  Post      uniform, one per frame
+//   @group(0) @binding(2)  Exposure  uniform, the adapted luminance left by the
+//                                    auto-exposure passes (unused when off)
 //
 // COLOUR SPACE: this pass is where scene-referred linear light becomes a
 // display value. On an sRGB swapchain the GPU applies the sRGB transfer
@@ -28,8 +30,18 @@ struct Post {
     gain: vec4<f32>,
 }
 
+struct Exposure {
+    luminance: f32,      // adapted average scene luminance
+    initialised: u32,    // 0 until a frame has been measured
+    _padding: vec2<u32>,
+}
+
+// Auto-exposure maps the adapted average onto this mid grey.
+const EXPOSURE_KEY: f32 = 0.18;
+
 @group(0) @binding(0) var hdr: texture_2d<f32>;
 @group(0) @binding(1) var<uniform> post: Post;
+@group(0) @binding(2) var<uniform> exposure: Exposure;
 
 override encode_srgb: bool = false;
 
@@ -43,7 +55,11 @@ fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
 @fragment
 fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let stored = finite_scene(textureLoad(hdr, vec2<i32>(position.xy), 0).rgb);
-    let scene = stored * post.exposure;
+    var scale = post.exposure;
+    if post.auto_exposure == 1u && exposure.initialised != 0u {
+        scale *= EXPOSURE_KEY / max(exposure.luminance, 1e-6);
+    }
+    let scene = stored * scale;
     var display: vec3<f32>;
     if post.curve == 1u {
         display = agx(scene);

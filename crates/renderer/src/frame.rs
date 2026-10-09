@@ -255,6 +255,9 @@ pub struct PostSettings {
     pub tonemapper: Tonemapper,
     /// Colour grading applied to the display image. Neutral by default.
     pub grade: Grade,
+    /// Automatic exposure, or `None` for the fixed `exposure_ev` alone. With
+    /// it on, `exposure_ev` becomes compensation on top of the adapted value.
+    pub auto_exposure: Option<AutoExposure>,
 }
 
 impl Default for PostSettings {
@@ -263,6 +266,35 @@ impl Default for PostSettings {
             exposure_ev: DEFAULT_EXPOSURE_EV,
             tonemapper: Tonemapper::default(),
             grade: Grade::default(),
+            auto_exposure: None,
+        }
+    }
+}
+
+/// Exposure that follows the scene: the average luminance is measured each
+/// frame and the image scaled so it lands on mid grey, adapting gradually.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoExposure {
+    /// The darkest and brightest scene luminance measured, in stops (log2).
+    /// Darker pixels count as black and are left out of the average, so a
+    /// night sky does not drag the exposure up.
+    pub min_log2_luminance: f32,
+    pub max_log2_luminance: f32,
+    /// How fast the eye adapts, per second: toward a brighter scene, then
+    /// toward a darker one. Infinite adapts within the frame.
+    pub brighten_speed: f32,
+    pub darken_speed: f32,
+}
+
+impl Default for AutoExposure {
+    /// A range from deep shade to direct sun, with the quick brightening and
+    /// slower darkening of a real eye.
+    fn default() -> Self {
+        Self {
+            min_log2_luminance: -10.0,
+            max_log2_luminance: 6.0,
+            brighten_speed: 3.0,
+            darken_speed: 1.0,
         }
     }
 }

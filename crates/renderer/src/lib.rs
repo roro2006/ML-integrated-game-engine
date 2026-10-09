@@ -48,9 +48,9 @@ mod uniforms;
 
 pub use debug_lines::DebugVertex;
 pub use frame::{
-    AlphaMode, AmbientLight, DEFAULT_EXPOSURE_EV, DirectionalLight, DrawCommand, Grade, MaterialDesc,
-    MaterialHandle, MaterialTextures, MeshHandle, PostSettings, RenderFrame, Shading, TextureHandle,
-    Tonemapper,
+    AlphaMode, AmbientLight, AutoExposure, DEFAULT_EXPOSURE_EV, DirectionalLight, DrawCommand, Grade,
+    MaterialDesc, MaterialHandle, MaterialTextures, MeshHandle, PostSettings, RenderFrame, Shading,
+    TextureHandle, Tonemapper,
 };
 pub use image::Image;
 pub use mesh::MeshInfo;
@@ -368,6 +368,11 @@ pub struct Renderer {
     pbr_pipelines: BTreeMap<permutation::PermutationKey, wgpu::RenderPipeline>,
     default_textures: pbr::DefaultTextures,
     samplers: sampler::SamplerCache<wgpu::Sampler>,
+
+    /// Automatic exposure's buffers and pipelines, and when the last frame
+    /// was drawn, which sets how far exposure adapts.
+    exposure: post::exposure::ExposureResources,
+    last_frame: Option<Instant>,
 }
 
 impl Renderer {
@@ -533,6 +538,18 @@ impl Renderer {
         let tonemap_pipeline =
             build_tonemap_pipeline(&device, &mut shaders, &tonemap_pipeline_layout, color_format)?;
         let post_buffer = tonemap::create_post_buffer(&device);
+        let exposure = {
+            let source = shaders
+                .source(shaders::EXPOSURE_HISTOGRAM)
+                .map_err(RenderError::Shader)?
+                .into_owned();
+            post::exposure::ExposureResources::new(&device, &source).map_err(|message| {
+                RenderError::ShaderCompile {
+                    shader: shaders::EXPOSURE_HISTOGRAM.to_owned(),
+                    message,
+                }
+            })?
+        };
         let mips = {
             let source = shaders
                 .source(shaders::MIP_DOWNSAMPLE)
@@ -610,6 +627,8 @@ impl Renderer {
             pbr_pipelines,
             default_textures,
             samplers: sampler::SamplerCache::default(),
+            exposure,
+            last_frame: None,
         };
         renderer.configure_output();
         Ok(renderer)
@@ -1097,6 +1116,18 @@ impl Renderer {
             .write_buffer(&self.globals_buffer, 0, &uniforms::globals_bytes(frame));
         self.queue
             .write_buffer(&self.post_buffer, 0, &tonemap::post_bytes(&frame.post));
+        let now = Instant::now();
+        let frame_seconds = self
+            .last_frame
+            .map_or(0.0, |last| now.duration_since(last).as_secs_f32());
+        self.last_frame = Some(now);
+        if let Some(auto) = frame.post.auto_exposure {
+            self.queue.write_buffer(
+                &self.exposure.params,
+                0,
+                &post::exposure::params_bytes(&auto, frame_seconds),
+            );
+        }
         if !plan.draws.is_empty() {
             self.queue.write_buffer(&self.draw_buffer, 0, &self.draw_staging);
         }

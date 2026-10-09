@@ -22,6 +22,12 @@ use crate::pipeline::DEPTH_FORMAT;
 use crate::registry::DrawPlan;
 use crate::{RenderError, RenderFrame, Renderer};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExposureStep {
+    Histogram,
+    Average,
+}
+
 /// What each pass records into: the frame's encoder and a view of every
 /// resource, indexed by [`ResourceId::index`].
 #[derive(Debug)]
@@ -88,6 +94,14 @@ impl Renderer {
         graph.add_pass("lit", &[], &[hdr, depth], move |context| {
             self.lit_pass(context, hdr, depth, depth_is_read_later, frame, plan)
         });
+        if let Some(auto) = frame.post.auto_exposure {
+            graph.add_pass("exposure-histogram", &[hdr], &[], move |context| {
+                self.exposure_pass(context, hdr, auto, ExposureStep::Histogram)
+            });
+            graph.add_pass("exposure-average", &[hdr], &[], move |context| {
+                self.exposure_pass(context, hdr, auto, ExposureStep::Average)
+            });
+        }
         graph.add_pass("tonemap", &[hdr], &[surface], move |context| {
             self.tonemap_pass(context, hdr, surface)
         });
@@ -244,6 +258,10 @@ impl Renderer {
                     binding: 1,
                     resource: self.post_buffer.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.exposure.exposure_uniform.as_entire_binding(),
+                },
             ],
         });
         let mut pass = context.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -266,6 +284,71 @@ impl Renderer {
         pass.set_pipeline(&self.tonemap_pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
         pass.draw(0..3, 0..1);
+        Ok(())
+    }
+
+    fn exposure_pass(
+        &self,
+        context: &mut PassContext,
+        hdr: ResourceId,
+        _settings: crate::AutoExposure,
+        step: ExposureStep,
+    ) -> Result<(), String> {
+        let resources = &self.exposure;
+        let hdr_view = context.view(hdr)?;
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("exposure-bind-group"),
+            layout: &resources.layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&hdr_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: resources.histogram.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: resources.state.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: resources.params.as_entire_binding(),
+                },
+            ],
+        });
+        {
+            let mut pass = context.encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some(match step {
+                    ExposureStep::Histogram => "exposure-histogram",
+                    ExposureStep::Average => "exposure-average",
+                }),
+                timestamp_writes: None,
+            });
+            pass.set_bind_group(0, &bind_group, &[]);
+            match step {
+                ExposureStep::Histogram => {
+                    let (width, height) = self.size;
+                    pass.set_pipeline(&resources.build);
+                    pass.dispatch_workgroups(width.div_ceil(16), height.div_ceil(16), 1);
+                }
+                ExposureStep::Average => {
+                    pass.set_pipeline(&resources.average);
+                    pass.dispatch_workgroups(1, 1, 1);
+                }
+            }
+        }
+        if step == ExposureStep::Average {
+            // Hand the adapted value to the tonemap pass as a uniform.
+            context.encoder.copy_buffer_to_buffer(
+                &resources.state,
+                0,
+                &resources.exposure_uniform,
+                0,
+                crate::post::exposure::STATE_SIZE as u64,
+            );
+        }
         Ok(())
     }
 
