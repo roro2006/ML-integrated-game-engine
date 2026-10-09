@@ -48,7 +48,7 @@ mod uniforms;
 
 pub use debug_lines::DebugVertex;
 pub use frame::{
-    AlphaMode, AmbientLight, DEFAULT_EXPOSURE_EV, DirectionalLight, DrawCommand, MaterialDesc,
+    AlphaMode, AmbientLight, DEFAULT_EXPOSURE_EV, DirectionalLight, DrawCommand, Grade, MaterialDesc,
     MaterialHandle, MaterialTextures, MeshHandle, PostSettings, RenderFrame, Shading, TextureHandle,
     Tonemapper,
 };

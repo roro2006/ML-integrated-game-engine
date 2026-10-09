@@ -337,11 +337,21 @@ fn the_tonemap_pass_matches_its_cpu_mirror() {
         [4.0, 4.0, 4.0],
         [2.0, 0.3, 0.05],
     ];
+    let warm = crate::Grade {
+        lift: [0.05, 0.02, 0.0],
+        gamma: [1.2, 1.0, 0.9],
+        gain: [1.0, 0.95, 0.8],
+    };
     for tonemapper in [Tonemapper::AcesFitted, Tonemapper::Agx] {
-        for exposure_ev in [0.0, 1.0, -2.0] {
+        for (exposure_ev, grade) in [
+            (0.0, crate::Grade::default()),
+            (1.0, warm),
+            (-2.0, crate::Grade::default()),
+        ] {
             let settings = PostSettings {
                 exposure_ev,
                 tonemapper,
+                grade,
             };
             for scene in scenes {
                 let mut frame = RenderFrame::new(

@@ -74,6 +74,13 @@ fn agx(colour: vec3<f32>) -> vec3<f32> {
     return clamp(pow(max(outset, vec3<f32>(0.0)), vec3<f32>(2.2)), vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
+// Lift, gamma and gain on display values in 0..1: lift raises the blacks,
+// gain scales the whites, and the inverse gamma bends the mid tones.
+fn grade(display: vec3<f32>, lift: vec3<f32>, inverse_gamma: vec3<f32>, gain: vec3<f32>) -> vec3<f32> {
+    let lifted = gain * (display + lift * (vec3<f32>(1.0) - display));
+    return clamp(pow(max(lifted, vec3<f32>(0.0)), inverse_gamma), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
 // The sRGB transfer function, for targets the GPU does not encode itself.
 fn linear_to_srgb(colour: vec3<f32>) -> vec3<f32> {
     let low = colour * 12.92;

@@ -8,8 +8,13 @@ use crate::block_on::block_on;
 use crate::shaders::TONEMAP;
 use crate::{DEFAULT_EXPOSURE_EV, PostSettings, Tonemapper};
 
-/// `Post` in `tonemap.wgsl`: exposure (f32), curve (u32), padding to 16.
-pub(crate) const POST_UNIFORM_SIZE: usize = 16;
+/// `Post` in `tonemap.wgsl`: exposure (f32), curve (u32), bloom intensity
+/// (f32), auto-exposure flag (u32), then lift, inverse gamma and gain (three
+/// `vec4<f32>`, rgb used).
+pub(crate) const POST_UNIFORM_SIZE: usize = 64;
+
+/// Gamma is clamped away from zero, where `1 / gamma` would be infinite.
+const MIN_GAMMA: f32 = 0.01;
 
 /// Exposure is clamped to this many stops either way. Beyond it the image is
 /// black or white whatever the scene, and an unbounded value can overflow
@@ -118,7 +123,10 @@ pub(crate) mod mirror {
             Tonemapper::AcesFitted => aces_fitted(exposed),
             Tonemapper::Agx => agx(exposed),
         };
-        display.map(|v| (linear_to_srgb(v) * 255.0).round().clamp(0.0, 255.0) as u8)
+        let grade = settings.grade;
+        let graded =
+            [0, 1, 2].map(|i| super::grade_channel(display[i], grade.lift[i], grade.gamma[i], grade.gain[i]));
+        graded.map(|v| (linear_to_srgb(v) * 255.0).round().clamp(0.0, 255.0) as u8)
     }
 }
 
@@ -135,7 +143,32 @@ pub(crate) fn post_bytes(settings: &PostSettings) -> [u8; POST_UNIFORM_SIZE] {
     let mut out = [0; POST_UNIFORM_SIZE];
     out[0..4].copy_from_slice(&exposure_scale(settings.exposure_ev).to_le_bytes());
     out[4..8].copy_from_slice(&operator(settings.tonemapper).to_le_bytes());
+    let grade = settings.grade;
+    let inverse_gamma = grade.gamma.map(|gamma| 1.0 / sanitised_gamma(gamma));
+    for (offset, values) in [(16, grade.lift), (32, inverse_gamma), (48, grade.gain)] {
+        for (index, value) in values.iter().enumerate() {
+            let at = offset + index * 4;
+            out[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        }
+    }
     out
+}
+
+/// A gamma the shader can divide by: non-finite means 1, and small values
+/// are clamped.
+fn sanitised_gamma(gamma: f32) -> f32 {
+    if gamma.is_finite() {
+        gamma.max(MIN_GAMMA)
+    } else {
+        1.0
+    }
+}
+
+/// Mirror of `grade` in `colour.wgsl`, on one display channel.
+#[cfg(test)]
+pub(crate) fn grade_channel(display: f32, lift: f32, gamma: f32, gain: f32) -> f32 {
+    let lifted = gain * (display + lift * (1.0 - display));
+    lifted.max(0.0).powf(1.0 / sanitised_gamma(gamma)).clamp(0.0, 1.0)
 }
 
 /// Whether the shader must apply the sRGB encode itself: only when the
@@ -326,15 +359,57 @@ mod tests {
         assert_eq!(exposure_scale(f32::INFINITY), default);
     }
 
+    fn f32_at(bytes: &[u8], at: usize) -> f32 {
+        f32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+    }
+
     #[test]
-    fn the_post_uniform_carries_scale_then_operator() {
+    fn the_post_uniform_carries_scale_curve_and_grade() {
         let bytes = post_bytes(&PostSettings {
             exposure_ev: 1.0,
             tonemapper: Tonemapper::Agx,
+            grade: crate::Grade {
+                lift: [0.1, 0.0, 0.0],
+                gamma: [2.0, 1.0, 1.0],
+                gain: [1.0, 1.0, 0.5],
+            },
         });
-        assert_eq!(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]), 2.0);
+        assert_eq!(f32_at(&bytes, 0), 2.0);
         assert_eq!(u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]), 1);
-        assert_eq!(&bytes[8..], &[0; 8]);
+        assert_eq!(f32_at(&bytes, 16), 0.1, "lift.r");
+        assert_eq!(f32_at(&bytes, 32), 0.5, "inverse gamma.r");
+        assert_eq!(f32_at(&bytes, 48 + 8), 0.5, "gain.b");
+    }
+
+    #[test]
+    fn the_default_grade_changes_nothing() {
+        for display in [0.0, 0.18, 0.5, 1.0] {
+            assert_eq!(grade_channel(display, 0.0, 1.0, 1.0), display);
+        }
+    }
+
+    #[test]
+    fn lift_raises_blacks_gain_scales_whites_and_gamma_bends_mids() {
+        assert!(
+            (grade_channel(0.0, 0.1, 1.0, 1.0) - 0.1).abs() < 1e-6,
+            "lift moves black"
+        );
+        assert_eq!(grade_channel(1.0, 0.1, 1.0, 1.0), 1.0, "and leaves white");
+        assert_eq!(grade_channel(1.0, 0.0, 1.0, 0.5), 0.5, "gain scales white");
+        assert!(
+            grade_channel(0.25, 0.0, 2.0, 1.0) > 0.25,
+            "gamma above 1 brightens mids"
+        );
+        assert_eq!(
+            grade_channel(0.5, 0.0, 0.0, 1.0),
+            grade_channel(0.5, 0.0, MIN_GAMMA, 1.0),
+            "zero gamma is clamped"
+        );
+        assert_eq!(
+            grade_channel(0.5, 0.0, f32::NAN, 1.0),
+            0.5,
+            "a broken gamma means 1"
+        );
     }
 
     #[test]

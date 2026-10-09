@@ -19,9 +19,13 @@
 #include "colour.wgsl"
 
 struct Post {
-    exposure: f32,   // linear scale, 2^EV
-    curve: u32,      // 0 = ACES fitted, 1 = AgX; see `Tonemapper` in frame.rs
-    _padding: vec2<f32>,
+    exposure: f32,         // linear scale, 2^EV
+    curve: u32,            // 0 = ACES fitted, 1 = AgX; see `Tonemapper` in frame.rs
+    bloom_intensity: f32,  // 0 = no bloom
+    auto_exposure: u32,    // 1 = scale by the adapted exposure as well
+    lift: vec4<f32>,       // rgb used; see `Grade` in frame.rs
+    inverse_gamma: vec4<f32>,
+    gain: vec4<f32>,
 }
 
 @group(0) @binding(0) var hdr: texture_2d<f32>;
@@ -46,6 +50,7 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     } else {
         display = aces_fitted(scene);
     }
+    display = grade(display, post.lift.rgb, post.inverse_gamma.rgb, post.gain.rgb);
     if encode_srgb {
         display = linear_to_srgb(display);
     }

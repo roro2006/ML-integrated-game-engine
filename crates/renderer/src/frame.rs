@@ -250,6 +250,8 @@ pub struct PostSettings {
     /// clamped to ±16.
     pub exposure_ev: f32,
     pub tonemapper: Tonemapper,
+    /// Colour grading applied to the display image. Neutral by default.
+    pub grade: Grade,
 }
 
 impl Default for PostSettings {
@@ -257,6 +259,31 @@ impl Default for PostSettings {
         Self {
             exposure_ev: DEFAULT_EXPOSURE_EV,
             tonemapper: Tonemapper::default(),
+            grade: Grade::default(),
+        }
+    }
+}
+
+/// Lift, gamma and gain, per channel, applied to display values after the
+/// tonemapper: `gain * (c + lift * (1 - c))`, then raised to `1 / gamma`.
+///
+/// Lift raises the blacks, gain scales the whites, and gamma bends the mid
+/// tones (above 1 brightens them). Three controls rather than a lookup table,
+/// until grading needs more than three.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Grade {
+    pub lift: [f32; 3],
+    pub gamma: [f32; 3],
+    pub gain: [f32; 3],
+}
+
+impl Default for Grade {
+    /// The identity: changes nothing.
+    fn default() -> Self {
+        Self {
+            lift: [0.0; 3],
+            gamma: [1.0; 3],
+            gain: [1.0; 3],
         }
     }
 }
