@@ -4,6 +4,18 @@
 // Every function here has a CPU mirror in crates/renderer/src/post/tonemap.rs,
 // and a GPU test holds the two equal. Change both together.
 
+// The largest finite half-float: what an Rgba16Float target can hold.
+const HALF_MAX: f32 = 65504.0;
+
+// Scene light the curves can take: NaN becomes 0, and negatives and anything
+// beyond the half-float range are clamped. A lit value past 65504 is stored as
+// infinity, and a curve would turn that into NaN and then black or garbage on
+// exactly the brightest pixels.
+fn finite_scene(colour: vec3<f32>) -> vec3<f32> {
+    let not_nan = select(vec3<f32>(0.0), colour, colour == colour);
+    return clamp(not_nan, vec3<f32>(0.0), vec3<f32>(HALF_MAX));
+}
+
 // ACES, as fitted by Stephen Hill (BakingLab): the sRGB-to-ACES input matrix,
 // a rational fit of the reference rendering and output transforms, and the
 // output matrix back to linear sRGB. Columns, so `M * v` matches the original

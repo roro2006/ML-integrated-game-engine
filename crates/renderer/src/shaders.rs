@@ -76,6 +76,8 @@ pub enum ShaderError {
     Read { path: PathBuf, message: String },
     /// An `#include` names itself, directly or through another file.
     IncludeCycle { chain: Vec<String> },
+    /// A line starts with `#include` but is not `#include "file.wgsl"` alone.
+    MalformedInclude { file: String, line: usize },
 }
 
 impl fmt::Display for ShaderError {
@@ -86,6 +88,10 @@ impl fmt::Display for ShaderError {
                 write!(f, "cannot read shader {}: {message}", path.display())
             }
             Self::IncludeCycle { chain } => write!(f, "shader include cycle: {}", chain.join(" -> ")),
+            Self::MalformedInclude { file, line } => write!(
+                f,
+                "{file}:{line}: an include must be `#include \"file.wgsl\"` alone on its line"
+            ),
         }
     }
 }
@@ -111,6 +117,8 @@ pub(crate) struct Expanded {
     pub(crate) segments: Vec<Segment>,
     /// Every file the text came from, the root first.
     pub(crate) files: Vec<String>,
+    /// Lines in `text` so far; kept rather than recounted for every line.
+    line_count: usize,
 }
 
 impl Expanded {
@@ -170,6 +178,7 @@ pub(crate) fn expand(
         text: String::new(),
         segments: Vec::new(),
         files: Vec::new(),
+        line_count: 0,
     };
     let mut stack = Vec::new();
     expand_into(root, read, &mut stack, &mut expanded)?;
@@ -197,12 +206,17 @@ fn expand_into(
     let mut run_start: Option<(usize, usize)> = None;
     for (index, line) in source.lines().enumerate() {
         let file_line = index + 1;
-        if let Some(target) = include_target(line) {
+        if line.trim_start().starts_with("#include") {
+            let target = include_target(line).ok_or_else(|| ShaderError::MalformedInclude {
+                file: name.to_owned(),
+                line: file_line,
+            })?;
             close_run(out, name, &mut run_start);
             expand_into(target, read, stack, out)?;
             continue;
         }
-        let expanded_line = out.text.lines().count() + 1;
+        out.line_count += 1;
+        let expanded_line = out.line_count;
         run_start.get_or_insert((expanded_line, file_line));
         out.text.push_str(line);
         out.text.push('\n');
@@ -214,7 +228,7 @@ fn expand_into(
 
 fn close_run(out: &mut Expanded, file: &str, run_start: &mut Option<(usize, usize)>) {
     if let Some((expanded_line, file_line)) = run_start.take() {
-        let lines = out.text.lines().count() + 1 - expanded_line;
+        let lines = out.line_count + 1 - expanded_line;
         out.segments.push(Segment {
             expanded_line,
             file: file.to_owned(),
@@ -432,6 +446,27 @@ mod tests {
                 ],
             })
         );
+    }
+
+    #[test]
+    fn a_malformed_include_is_reported_where_it_is() {
+        for bad in [
+            "#include colour.wgsl",
+            "#include \"a.wgsl\" // note",
+            "  #include",
+        ] {
+            let source = format!("ok\n{bad}\n");
+            let entries = [("main.wgsl", source.as_str())];
+            let mut read = files(&entries);
+            assert_eq!(
+                expand("main.wgsl", &mut read),
+                Err(ShaderError::MalformedInclude {
+                    file: "main.wgsl".to_owned(),
+                    line: 2,
+                }),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

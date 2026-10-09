@@ -145,18 +145,26 @@ impl Default for AmbientLight {
 /// whose filmic tonemapper is ACES-derived (owner decision, 2026-10-09). AgX
 /// desaturates bright, saturated light more gracefully and is kept selectable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum Tonemapper {
+    /// Stephen Hill's fit of the ACES reference and output transforms.
     #[default]
     AcesFitted,
+    /// AgX with Benjamin Wrensch's polynomial contrast curve.
     Agx,
 }
 
 /// How the HDR scene becomes a display image. Engine data, read by the
 /// tonemap pass each frame.
+///
+/// Non-exhaustive so that bloom and grading can join it: build one with
+/// `PostSettings { exposure_ev: 1.0, ..PostSettings::default() }`.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct PostSettings {
     /// Exposure in stops: +1 doubles the light reaching the tonemapper. A
-    /// non-finite value is ignored, and the value is clamped to ±16.
+    /// non-finite value means [`DEFAULT_EXPOSURE_EV`], and the value is
+    /// clamped to ±16.
     pub exposure_ev: f32,
     pub tonemapper: Tonemapper,
 }
@@ -195,6 +203,10 @@ pub struct DrawCommand {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RenderFrame {
     pub view_proj: [[f32; 4]; 4],
+    /// The background, as linear scene light: it is exposed and tonemapped
+    /// with everything else, so (1, 1, 1) is a bright sky, not display white.
+    /// [`Renderer::render_clear`](crate::Renderer::render_clear) takes a
+    /// display colour instead.
     pub clear_color: Color,
     pub light: DirectionalLight,
     pub ambient: AmbientLight,

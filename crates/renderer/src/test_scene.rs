@@ -365,6 +365,35 @@ fn the_tonemap_pass_matches_its_cpu_mirror() {
     }
 }
 
+/// A swapchain with no sRGB format gets the encode in the shaders instead of
+/// in hardware. Both the tonemap pass and the debug lines must do it, exactly
+/// once, so the whole reference scene, lines included, must come out the same
+/// either way, give or take a rounding step.
+#[test]
+#[ignore = "requires a GPU adapter and driver"]
+fn a_non_srgb_target_is_encoded_by_the_shaders_to_the_same_image() {
+    let mut hardware = headless();
+    let mut shader = Renderer::headless_with_format(
+        WIDTH,
+        HEIGHT,
+        RendererConfig::default(),
+        wgpu::TextureFormat::Rgba8Unorm,
+    )
+    .expect("these tests are ignored unless a GPU adapter exists");
+
+    let hardware_image = {
+        let frame = build(&mut hardware);
+        hardware.render_to_image(&frame).expect("reads back")
+    };
+    let shader_image = {
+        let frame = build(&mut shader);
+        shader.render_to_image(&frame).expect("reads back")
+    };
+    if let Err(mismatch) = golden::compare(&hardware_image, &shader_image, 1) {
+        panic!("shader encode differs from hardware encode: {mismatch}");
+    }
+}
+
 /// The reference every later pass change is held to. Re-captured only on
 /// purpose, with `UPDATE_GOLDEN=1`, when a change is meant to alter the image.
 #[test]

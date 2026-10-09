@@ -15,10 +15,15 @@
 //   @location(0) position  Float32x3   offset 0    world space
 //   @location(1) color     Float32x4   offset 12   linear RGBA
 //
-// COLOUR SPACE: as in lit.wgsl, the surface is sRGB and the GPU applies the
-// linear -> sRGB transfer function when it writes the render target. The
-// colour below is LINEAR and is returned unchanged. Do NOT add gamma
-// correction here; that would double-encode and wash the lines out.
+// COLOUR SPACE: lines draw after tonemapping, straight onto the swapchain, so
+// their colour is a LINEAR display value: not exposed, not tonemapped. On an
+// sRGB swapchain the GPU encodes on write; on a non-sRGB one the pipeline sets
+// `encode_srgb` and the encode happens here, exactly as in tonemap.wgsl, so
+// lines and scene always agree.
+
+#include "colour.wgsl"
+
+override encode_srgb: bool = false;
 
 // Declared in full even though only `view_proj` is read. The bind group layout
 // this pipeline shares with the lit pass declares a `min_binding_size` of 112
@@ -60,6 +65,9 @@ fn fs_main(fragment: VertexOutput) -> @location(0) vec4<f32> {
     // make its colour depend on the scene's lighting, which is exactly the
     // thing the annotation is usually being used to diagnose.
     //
-    // Linear out — see the COLOUR SPACE note at the top of this file.
+    // See the COLOUR SPACE note at the top of this file.
+    if encode_srgb {
+        return vec4<f32>(linear_to_srgb(fragment.color.rgb), fragment.color.a);
+    }
     return fragment.color;
 }

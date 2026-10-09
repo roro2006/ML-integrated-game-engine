@@ -38,7 +38,8 @@ fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
 
 @fragment
 fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
-    let scene = textureLoad(hdr, vec2<i32>(position.xy), 0).rgb * post.exposure;
+    let stored = finite_scene(textureLoad(hdr, vec2<i32>(position.xy), 0).rgb);
+    let scene = stored * post.exposure;
     var display: vec3<f32>;
     if post.curve == 1u {
         display = agx(scene);

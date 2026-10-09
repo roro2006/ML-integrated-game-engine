@@ -156,6 +156,14 @@ pub(crate) fn create_pipeline(
         blend: None,
         write_mask: wgpu::ColorWrites::ALL,
     })];
+    let constants = [(
+        "encode_srgb",
+        if crate::post::tonemap::encodes_in_shader(color_format) {
+            1.0
+        } else {
+            0.0
+        },
+    )];
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("debug-line-pipeline"),
         layout: Some(layout),
@@ -189,7 +197,10 @@ pub(crate) fn create_pipeline(
         fragment: Some(wgpu::FragmentState {
             module: &module,
             entry_point: Some("fs_main"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants: &constants,
+                ..Default::default()
+            },
             targets: &targets,
         }),
         multiview_mask: None,

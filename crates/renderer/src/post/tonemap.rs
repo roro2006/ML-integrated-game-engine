@@ -6,7 +6,7 @@
 
 use crate::block_on::block_on;
 use crate::shaders::TONEMAP;
-use crate::{PostSettings, Tonemapper};
+use crate::{DEFAULT_EXPOSURE_EV, PostSettings, Tonemapper};
 
 /// `Post` in `tonemap.wgsl`: exposure (f32), curve (u32), padding to 16.
 pub(crate) const POST_UNIFORM_SIZE: usize = 16;
@@ -16,13 +16,16 @@ pub(crate) const POST_UNIFORM_SIZE: usize = 16;
 /// `f32` in the shader.
 const MAX_EXPOSURE_EV: f32 = 16.0;
 
-/// The linear scale for an exposure in stops. A non-finite value means no
-/// adjustment; a finite one is clamped to [`MAX_EXPOSURE_EV`].
+/// The linear scale for an exposure in stops. A non-finite value means the
+/// default exposure, as if the field had never been set; a finite one is
+/// clamped to [`MAX_EXPOSURE_EV`].
 pub(crate) fn exposure_scale(exposure_ev: f32) -> f32 {
-    if !exposure_ev.is_finite() {
-        return 1.0;
-    }
-    exposure_ev.clamp(-MAX_EXPOSURE_EV, MAX_EXPOSURE_EV).exp2()
+    let ev = if exposure_ev.is_finite() {
+        exposure_ev
+    } else {
+        DEFAULT_EXPOSURE_EV
+    };
+    ev.clamp(-MAX_EXPOSURE_EV, MAX_EXPOSURE_EV).exp2()
 }
 
 /// CPU copies of the shader's curves. Test-only: the runtime path is the
@@ -103,9 +106,14 @@ pub(crate) mod mirror {
 
     /// What the tonemap pass shows for a linear scene colour, as an 8-bit display
     /// code per channel. The reference the GPU test checks the shader against.
+    /// Mirror of `finite_scene` in `colour.wgsl`.
+    pub(crate) fn finite_scene(colour: Vec3) -> Vec3 {
+        colour.map(|v| if v.is_nan() { 0.0 } else { v.clamp(0.0, 65504.0) })
+    }
+
     pub(crate) fn display_code(scene: Vec3, settings: &PostSettings) -> [u8; 3] {
         let scale = exposure_scale(settings.exposure_ev);
-        let exposed = scene.map(|v| v * scale);
+        let exposed = finite_scene(scene).map(|v| v * scale);
         let display = match settings.tonemapper {
             Tonemapper::AcesFitted => aces_fitted(exposed),
             Tonemapper::Agx => agx(exposed),
@@ -282,6 +290,20 @@ mod tests {
     }
 
     #[test]
+    fn broken_scene_light_reaches_the_curve_as_something_finite() {
+        assert_eq!(finite_scene([f32::NAN, f32::INFINITY, -3.0]), [0.0, 65504.0, 0.0]);
+        // Neutral, because ACES mixes channels: an infinite green would brighten
+        // red through the input matrix.
+        let settings = PostSettings::default();
+        assert_eq!(display_code([f32::NAN; 3], &settings), [0; 3], "NaN is black");
+        assert_eq!(
+            display_code([f32::INFINITY; 3], &settings),
+            [255; 3],
+            "infinity is white"
+        );
+    }
+
+    #[test]
     fn the_srgb_encode_matches_the_standard() {
         assert_eq!(linear_to_srgb(0.0), 0.0);
         assert!(close(linear_to_srgb(1.0), 1.0, 1e-6));
@@ -295,8 +317,13 @@ mod tests {
         assert_eq!(exposure_scale(1.0), 2.0);
         assert_eq!(exposure_scale(-2.0), 0.25);
         assert_eq!(exposure_scale(100.0), MAX_EXPOSURE_EV.exp2());
-        assert_eq!(exposure_scale(f32::NAN), 1.0, "a broken setting changes nothing");
-        assert_eq!(exposure_scale(f32::INFINITY), 1.0);
+        let default = DEFAULT_EXPOSURE_EV.exp2();
+        assert_eq!(
+            exposure_scale(f32::NAN),
+            default,
+            "a broken setting means the default"
+        );
+        assert_eq!(exposure_scale(f32::INFINITY), default);
     }
 
     #[test]

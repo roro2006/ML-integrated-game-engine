@@ -51,6 +51,7 @@ pub use mesh::MeshInfo;
 pub use mesh_data::{Aabb, MeshData, MeshDataError, VERTEX_FLOATS, WHITE};
 pub use shaders::{DEBUG_LINE, LIT, ShaderError, ShaderLibrary};
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -282,6 +283,9 @@ pub struct Renderer {
     /// The last hot-reload failure, kept so the engine can show it on the debug
     /// overlay. The renderer does not log: that is the engine layer's job.
     shader_error: Option<String>,
+    /// The failure behind each stale pipeline, by shader name. `shader_error`
+    /// is these joined, so fixing one shader never hides another still broken.
+    shader_failures: BTreeMap<&'static str, String>,
 
     /// Textures the render graph allocates per frame, the depth buffer among
     /// them.
@@ -386,6 +390,18 @@ impl Renderer {
     /// A size larger than the device's largest 2D texture is an error rather
     /// than a validation failure later.
     pub fn headless(width: u32, height: u32, config: RendererConfig) -> Result<Self, RenderError> {
+        Self::headless_with_format(width, height, config, OFFSCREEN_FORMAT)
+    }
+
+    /// A headless renderer with a chosen target format. Tests use a non-sRGB
+    /// one to exercise the shader-side encode a window falls back to when its
+    /// surface offers no sRGB format.
+    pub(crate) fn headless_with_format(
+        width: u32,
+        height: u32,
+        config: RendererConfig,
+        format: wgpu::TextureFormat,
+    ) -> Result<Self, RenderError> {
         let instance = create_instance(config);
         let adapter = request_adapter(&instance, config, None)?;
         let (device, queue) = request_device(&adapter)?;
@@ -401,7 +417,7 @@ impl Renderer {
             queue,
             adapter_info(&adapter),
             output,
-            OFFSCREEN_FORMAT,
+            format,
             (width, height),
         )
     }
@@ -496,6 +512,7 @@ impl Renderer {
             draw_layout,
             pipeline,
             shader_error: None,
+            shader_failures: BTreeMap::new(),
             transients: TexturePool::default(),
             meshes: Registry::default(),
             materials: Registry::default(),
@@ -644,6 +661,7 @@ impl Renderer {
         self.pipeline = pipeline;
         self.debug_pipeline = debug_pipeline;
         self.tonemap_pipeline = tonemap_pipeline;
+        self.shader_failures.clear();
         self.shader_error = None;
         Ok(())
     }
@@ -712,22 +730,19 @@ impl Renderer {
     /// an edit to one cannot disturb the other.
     fn reload_shaders_if_changed(&mut self) {
         let changed = self.shaders.changed();
+        if changed.is_empty() {
+            return;
+        }
         if pipeline::lit_shader_changed(&changed) {
-            match self.build_lit_pipeline() {
-                Ok(pipeline) => {
-                    self.pipeline = pipeline;
-                    self.shader_error = None;
-                }
-                Err(error) => self.shader_error = Some(error.to_string()),
+            let rebuilt = self.build_lit_pipeline();
+            if let Some(pipeline) = self.record_rebuild(shaders::LIT, rebuilt) {
+                self.pipeline = pipeline;
             }
         }
         if debug_lines::debug_shader_changed(&changed) {
-            match self.build_debug_pipeline() {
-                Ok(pipeline) => {
-                    self.debug_pipeline = pipeline;
-                    self.shader_error = None;
-                }
-                Err(error) => self.shader_error = Some(error.to_string()),
+            let rebuilt = self.build_debug_pipeline();
+            if let Some(pipeline) = self.record_rebuild(shaders::DEBUG_LINE, rebuilt) {
+                self.debug_pipeline = pipeline;
             }
         }
         // `changed` names the tonemap shader when it or `colour.wgsl` changed.
@@ -738,14 +753,37 @@ impl Renderer {
                 &self.tonemap_pipeline_layout,
                 self.color_format,
             );
-            match rebuilt {
-                Ok(pipeline) => {
-                    self.tonemap_pipeline = pipeline;
-                    self.shader_error = None;
-                }
-                Err(error) => self.shader_error = Some(error.to_string()),
+            if let Some(pipeline) = self.record_rebuild(shaders::TONEMAP, rebuilt) {
+                self.tonemap_pipeline = pipeline;
             }
         }
+    }
+
+    /// Records how a hot-reload rebuild went and returns the pipeline to
+    /// install, if it built.
+    fn record_rebuild(
+        &mut self,
+        shader: &'static str,
+        rebuilt: Result<wgpu::RenderPipeline, RenderError>,
+    ) -> Option<wgpu::RenderPipeline> {
+        let pipeline = match rebuilt {
+            Ok(pipeline) => {
+                self.shader_failures.remove(shader);
+                Some(pipeline)
+            }
+            Err(error) => {
+                self.shader_failures.insert(shader, error.to_string());
+                None
+            }
+        };
+        self.shader_error = (!self.shader_failures.is_empty()).then(|| {
+            self.shader_failures
+                .values()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n")
+        });
+        pipeline
     }
 
     /// Grows the per-draw uniform buffer to hold at least `needed` draws.
@@ -899,6 +937,10 @@ impl Renderer {
     ///
     /// Kept alongside [`render`](Self::render) for callers that have no scene to
     /// draw yet, and for the startup path before any content is loaded.
+    ///
+    /// `color` is a linear *display* colour written straight to the
+    /// swapchain, with no exposure or tonemapping, unlike
+    /// [`RenderFrame::clear_color`], which is scene light.
     pub fn render_clear(&mut self, color: Color) -> Result<FrameOutcome, RenderError> {
         if self.size.0 == 0 || self.size.1 == 0 {
             return Ok(FrameOutcome::Skipped(SkipReason::ZeroSizedSurface));
