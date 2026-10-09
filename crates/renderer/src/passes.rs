@@ -17,7 +17,7 @@
 //! the scene, and later screen-space passes will sample depth.
 
 use crate::graph::resources::{self, TexturePool};
-use crate::graph::{RenderGraph, ResourceId, TextureDesc};
+use crate::graph::{RenderGraph, ResourceId, TransientDesc};
 use crate::pipeline::DEPTH_FORMAT;
 use crate::registry::DrawPlan;
 use crate::{RenderError, RenderFrame, Renderer};
@@ -44,8 +44,8 @@ impl PassContext {
 pub(crate) const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 /// The HDR scene target's descriptor at a given size.
-pub(crate) fn hdr_desc(width: u32, height: u32) -> TextureDesc {
-    TextureDesc {
+pub(crate) fn hdr_desc(width: u32, height: u32) -> TransientDesc {
+    TransientDesc {
         format: HDR_FORMAT,
         width,
         height,
@@ -54,8 +54,8 @@ pub(crate) fn hdr_desc(width: u32, height: u32) -> TextureDesc {
 }
 
 /// The depth buffer's descriptor at a given size.
-pub(crate) fn depth_desc(width: u32, height: u32) -> TextureDesc {
-    TextureDesc {
+pub(crate) fn depth_desc(width: u32, height: u32) -> TransientDesc {
+    TransientDesc {
         format: DEPTH_FORMAT,
         width,
         height,

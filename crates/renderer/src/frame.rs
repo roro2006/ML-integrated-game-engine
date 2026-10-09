@@ -24,6 +24,23 @@ pub struct MeshHandle(u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct MaterialHandle(u32);
 
+/// Handle to an uploaded texture.
+///
+/// Runtime-only; see [`MeshHandle`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TextureHandle(u32);
+
+impl TextureHandle {
+    /// Builds a handle from a raw index. See [`MeshHandle::from_index`].
+    pub const fn from_index(index: u32) -> Self {
+        Self(index)
+    }
+
+    pub const fn index(self) -> u32 {
+        self.0
+    }
+}
+
 impl MeshHandle {
     /// Builds a handle from a raw index.
     ///

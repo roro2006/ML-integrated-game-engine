@@ -30,6 +30,9 @@ pub const DEBUG_LINE: &str = "debug_line.wgsl";
 /// The fullscreen pass that tonemaps the HDR scene onto the swapchain.
 pub(crate) const TONEMAP: &str = "tonemap.wgsl";
 
+/// Draws one mip level from the level above it.
+pub(crate) const MIP_DOWNSAMPLE: &str = "mip_downsample.wgsl";
+
 /// Shared colour maths: tonemapping curves. Included, never compiled alone.
 pub(crate) const COLOUR: &str = "colour.wgsl";
 
@@ -58,6 +61,7 @@ const EMBEDDED: &[(&str, &str)] = &[
     (DEBUG_LINE, shader_file!("debug_line.wgsl")),
     (TONEMAP, shader_file!("tonemap.wgsl")),
     (COLOUR, shader_file!("colour.wgsl")),
+    (MIP_DOWNSAMPLE, shader_file!("mip_downsample.wgsl")),
 ];
 
 fn embedded_source(name: &str) -> Option<&'static str> {

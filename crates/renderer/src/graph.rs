@@ -42,7 +42,7 @@ impl ResourceId {
 /// What a transient texture must be. Identical descriptors are interchangeable,
 /// which is what lets the pool reuse a texture between frames.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct TextureDesc {
+pub(crate) struct TransientDesc {
     pub(crate) format: wgpu::TextureFormat,
     pub(crate) width: u32,
     pub(crate) height: u32,
@@ -52,7 +52,7 @@ pub(crate) struct TextureDesc {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Origin {
     Imported,
-    Transient(TextureDesc),
+    Transient(TransientDesc),
 }
 
 #[derive(Debug)]
@@ -145,7 +145,7 @@ impl<'a, C> RenderGraph<'a, C> {
     }
 
     /// Declares a transient texture the pool provides for this frame.
-    pub(crate) fn create(&mut self, name: &'static str, desc: TextureDesc) -> ResourceId {
+    pub(crate) fn create(&mut self, name: &'static str, desc: TransientDesc) -> ResourceId {
         self.declare(name, Origin::Transient(desc))
     }
 
@@ -238,7 +238,7 @@ impl<C> CompiledGraph<'_, C> {
 
     /// Transient resources that some pass uses, with their names and
     /// descriptors. A transient no pass touches is never allocated.
-    pub(crate) fn transients(&self) -> impl Iterator<Item = (ResourceId, &'static str, TextureDesc)> + '_ {
+    pub(crate) fn transients(&self) -> impl Iterator<Item = (ResourceId, &'static str, TransientDesc)> + '_ {
         self.resources
             .iter()
             .enumerate()
@@ -313,7 +313,7 @@ impl<C> CompiledGraph<'_, C> {
 mod tests {
     use super::*;
 
-    const HDR: TextureDesc = TextureDesc {
+    const HDR: TransientDesc = TransientDesc {
         format: wgpu::TextureFormat::Rgba16Float,
         width: 64,
         height: 32,
@@ -336,7 +336,7 @@ mod tests {
         let hdr = graph.create("hdr", HDR);
         let depth = graph.create(
             "depth",
-            TextureDesc {
+            TransientDesc {
                 format: wgpu::TextureFormat::Depth32Float,
                 ..HDR
             },

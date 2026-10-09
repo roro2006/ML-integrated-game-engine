@@ -16,14 +16,14 @@
 //! The pool is generic over the texture type so that reuse is tested without
 //! a device; the renderer instantiates it with `wgpu::Texture`.
 
-use super::TextureDesc;
+use super::TransientDesc;
 
 /// Frames a texture may go unasked for before the pool drops it.
 pub(crate) const RETIRE_AFTER_FRAMES: u32 = 4;
 
 #[derive(Debug)]
 struct Entry<T> {
-    desc: TextureDesc,
+    desc: TransientDesc,
     texture: T,
     in_use: bool,
     /// Consecutive frames, before this one, in which nothing asked for it.
@@ -66,7 +66,11 @@ impl<T> TexturePool<T> {
     /// A free texture matching `desc`, created with `create` if none is free.
     ///
     /// Two transients with the same descriptor in one frame get two textures.
-    pub(crate) fn acquire(&mut self, desc: TextureDesc, create: impl FnOnce(&TextureDesc) -> T) -> PoolSlot {
+    pub(crate) fn acquire(
+        &mut self,
+        desc: TransientDesc,
+        create: impl FnOnce(&TransientDesc) -> T,
+    ) -> PoolSlot {
         if let Some(index) = self
             .entries
             .iter()
@@ -107,7 +111,7 @@ impl<T> TexturePool<T> {
 
 /// Creates the GPU texture for a transient, labelled with its graph name so
 /// captures and validation messages say which target it is.
-pub(crate) fn create_texture(device: &wgpu::Device, label: &str, desc: &TextureDesc) -> wgpu::Texture {
+pub(crate) fn create_texture(device: &wgpu::Device, label: &str, desc: &TransientDesc) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d {
@@ -128,8 +132,8 @@ pub(crate) fn create_texture(device: &wgpu::Device, label: &str, desc: &TextureD
 mod tests {
     use super::*;
 
-    fn desc(width: u32, height: u32) -> TextureDesc {
-        TextureDesc {
+    fn desc(width: u32, height: u32) -> TransientDesc {
+        TransientDesc {
             format: wgpu::TextureFormat::Rgba16Float,
             width,
             height,
@@ -138,7 +142,7 @@ mod tests {
     }
 
     /// Stands in for a texture: records the descriptor it was made from.
-    fn make(desc: &TextureDesc) -> TextureDesc {
+    fn make(desc: &TransientDesc) -> TransientDesc {
         *desc
     }
 
@@ -149,7 +153,7 @@ mod tests {
             pool.begin_frame();
             pool.acquire(desc(64, 64), make);
             pool.acquire(
-                TextureDesc {
+                TransientDesc {
                     format: wgpu::TextureFormat::Depth32Float,
                     ..desc(64, 64)
                 },
@@ -166,7 +170,7 @@ mod tests {
         pool.begin_frame();
         let colour = pool.acquire(desc(64, 64), make);
         let storage = pool.acquire(
-            TextureDesc {
+            TransientDesc {
                 usage: wgpu::TextureUsages::STORAGE_BINDING,
                 ..desc(64, 64)
             },

@@ -8,7 +8,7 @@
 
 use core::marker::PhantomData;
 
-use crate::frame::{DrawCommand, MaterialHandle, MeshHandle};
+use crate::frame::{DrawCommand, MaterialHandle, MeshHandle, TextureHandle};
 
 /// A runtime-only index into a [`Registry`].
 ///
@@ -31,6 +31,16 @@ impl Handle for MeshHandle {
 }
 
 impl Handle for MaterialHandle {
+    fn from_index(index: u32) -> Self {
+        Self::from_index(index)
+    }
+
+    fn index(self) -> u32 {
+        self.index()
+    }
+}
+
+impl Handle for TextureHandle {
     fn from_index(index: u32) -> Self {
         Self::from_index(index)
     }

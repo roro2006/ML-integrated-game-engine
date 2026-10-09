@@ -36,20 +36,28 @@ mod passes;
 mod pipeline;
 mod post;
 mod registry;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "materials bind samplers in B4, the next change")
+)]
+mod sampler;
 mod shaders;
 #[cfg(test)]
 mod test_scene;
+mod texture;
 mod uniforms;
 
 pub use debug_lines::DebugVertex;
 pub use frame::{
     AmbientLight, DEFAULT_EXPOSURE_EV, DirectionalLight, DrawCommand, MaterialDesc, MaterialHandle,
-    MeshHandle, PostSettings, RenderFrame, Tonemapper,
+    MeshHandle, PostSettings, RenderFrame, TextureHandle, Tonemapper,
 };
 pub use image::Image;
 pub use mesh::MeshInfo;
 pub use mesh_data::{Aabb, MeshData, MeshDataError, VERTEX_FLOATS, WHITE};
+pub use sampler::{Filter, SamplerDesc, Wrap};
 pub use shaders::{DEBUG_LINE, LIT, ShaderError, ShaderLibrary};
+pub use texture::{ColorSpace, Mips, TextureDesc, TextureError, TextureInfo};
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -154,6 +162,33 @@ pub struct AdapterInfo {
     pub backend: String,
     pub device_kind: DeviceKind,
     pub driver: String,
+    /// Optional GPU features this device was created with.
+    pub features: GpuFeatures,
+}
+
+/// Optional features, requested only when the adapter has them; see
+/// `docs/adr/0023-device-limits-and-optional-features.md`. Everything that
+/// uses one has a path that works without it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct GpuFeatures {
+    /// BC1 to BC7 block-compressed textures: desktop GPUs have them, some
+    /// integrated and mobile ones do not.
+    pub bc_compression: bool,
+    /// Arrays of textures in one binding, for a later bindless material path.
+    pub texture_binding_array: bool,
+}
+
+/// The optional features the renderer asks for when the adapter offers them.
+const OPTIONAL_FEATURES: wgpu::Features =
+    wgpu::Features::TEXTURE_COMPRESSION_BC.union(wgpu::Features::TEXTURE_BINDING_ARRAY);
+
+impl GpuFeatures {
+    fn from_wgpu(features: wgpu::Features) -> Self {
+        Self {
+            bc_compression: features.contains(wgpu::Features::TEXTURE_COMPRESSION_BC),
+            texture_binding_array: features.contains(wgpu::Features::TEXTURE_BINDING_ARRAY),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -166,6 +201,8 @@ pub enum RenderError {
     Surface(String),
     /// The mesh failed its own invariants, so nothing was uploaded.
     MeshUpload(MeshDataError),
+    /// The texture failed validation, so nothing was uploaded.
+    TextureUpload(TextureError),
     /// WGSL source could not be resolved.
     Shader(ShaderError),
     /// WGSL compiled into a pipeline that the GPU rejected. Carries the
@@ -191,6 +228,7 @@ impl fmt::Display for RenderError {
             Self::UnsupportedSurface(message) => write!(f, "unsupported surface: {message}"),
             Self::Surface(message) => write!(f, "surface failure: {message}"),
             Self::MeshUpload(error) => write!(f, "cannot upload mesh: {error}"),
+            Self::TextureUpload(error) => write!(f, "cannot upload texture: {error}"),
             Self::Shader(error) => write!(f, "{error}"),
             Self::ShaderCompile { shader, message } => {
                 write!(f, "cannot build a pipeline for {shader}: {message}")
@@ -320,6 +358,9 @@ pub struct Renderer {
     tonemap_pipeline_layout: wgpu::PipelineLayout,
     tonemap_pipeline: wgpu::RenderPipeline,
     post_buffer: wgpu::Buffer,
+
+    textures: Registry<TextureHandle, texture::GpuTexture>,
+    mips: texture::MipGenerator,
 }
 
 impl Renderer {
@@ -489,6 +530,16 @@ impl Renderer {
         let tonemap_pipeline =
             build_tonemap_pipeline(&device, &mut shaders, &tonemap_pipeline_layout, color_format)?;
         let post_buffer = tonemap::create_post_buffer(&device);
+        let mips = {
+            let source = shaders
+                .source(shaders::MIP_DOWNSAMPLE)
+                .map_err(RenderError::Shader)?
+                .into_owned();
+            texture::MipGenerator::new(&device, &source).map_err(|message| RenderError::ShaderCompile {
+                shader: shaders::MIP_DOWNSAMPLE.to_owned(),
+                message,
+            })?
+        };
 
         // Read from the device rather than assumed: 256 is the common value for
         // `min_uniform_buffer_offset_alignment`, but it is a limit precisely
@@ -533,6 +584,8 @@ impl Renderer {
             tonemap_pipeline_layout,
             tonemap_pipeline,
             post_buffer,
+            textures: Registry::default(),
+            mips,
         };
         renderer.configure_output();
         Ok(renderer)
@@ -620,6 +673,28 @@ impl Renderer {
             triangle_count: index_count / 3,
             bounds,
         }))
+    }
+
+    /// Uploads RGBA8 texels and returns a handle to the texture.
+    ///
+    /// The texels are validated against the description first, and mips are
+    /// generated here when asked for, so the texture is complete before any
+    /// frame can sample it.
+    pub fn create_texture(
+        &mut self,
+        desc: &TextureDesc,
+        texels: &[u8],
+    ) -> Result<TextureHandle, RenderError> {
+        let max = self.device.limits().max_texture_dimension_2d;
+        texture::validate(desc, texels, max).map_err(RenderError::TextureUpload)?;
+        let uploaded = texture::upload(&self.device, &self.queue, &self.mips, desc, texels);
+        Ok(self.textures.insert(uploaded))
+    }
+
+    /// Size, mip count and colour space of an uploaded texture, or `None` for
+    /// an unknown handle.
+    pub fn texture_info(&self, handle: TextureHandle) -> Option<TextureInfo> {
+        self.textures.get(handle).map(texture::GpuTexture::info)
     }
 
     /// Registers a material and returns a handle to it.
@@ -1030,6 +1105,19 @@ impl Renderer {
             return Err(RenderError::Readback("there is no offscreen texture".to_owned()));
         };
         let (width, height) = self.size;
+        self.read_texture(texture, 0, width, height)
+    }
+
+    /// Reads one mip level of an RGBA8 texture back to the CPU, blocking until
+    /// the GPU is done. The bytes are as stored: sRGB-encoded for an sRGB
+    /// texture.
+    fn read_texture(
+        &self,
+        texture: &wgpu::Texture,
+        mip_level: u32,
+        width: u32,
+        height: u32,
+    ) -> Result<Image, RenderError> {
         let bytes_per_row = image::padded_bytes_per_row(width);
         let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("readback"),
@@ -1045,7 +1133,7 @@ impl Renderer {
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
                 texture,
-                mip_level: 0,
+                mip_level,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
@@ -1175,11 +1263,12 @@ fn request_adapter(
 fn request_device(adapter: &wgpu::Adapter) -> Result<(wgpu::Device, wgpu::Queue), RenderError> {
     // Downlevel limits keep the engine honest about the low-spec target;
     // they are raised to what the adapter reports for resolution-derived
-    // limits only.
+    // limits only. Optional features are asked for only when the adapter has
+    // them, so requesting one can never fail device creation (ADR-0023).
     let required_limits = wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits());
     block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("engine-device"),
-        required_features: wgpu::Features::empty(),
+        required_features: adapter.features() & OPTIONAL_FEATURES,
         required_limits,
         ..Default::default()
     }))
@@ -1199,6 +1288,7 @@ fn adapter_info(adapter: &wgpu::Adapter) -> AdapterInfo {
             wgpu::DeviceType::Other => DeviceKind::Other,
         },
         driver: format!("{} {}", info.driver, info.driver_info).trim().to_owned(),
+        features: GpuFeatures::from_wgpu(adapter.features() & OPTIONAL_FEATURES),
     }
 }
 
