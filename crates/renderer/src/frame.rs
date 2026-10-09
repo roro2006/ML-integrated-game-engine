@@ -58,8 +58,8 @@ impl MaterialHandle {
 /// What a surface looks like. Textures arrive in a later milestone.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MaterialDesc {
-    /// Linear RGBA. The surface is sRGB and the GPU converts on write, so these
-    /// are linear values, not sRGB ones.
+    /// Linear RGBA: scene light, which the tonemap pass maps to the display,
+    /// so these are linear values, not sRGB ones.
     ///
     /// A *tint*, multiplied by each vertex's colour (ADR-0017). On a mesh with
     /// no vertex colours that is the whole colour, exactly as before.
@@ -139,6 +139,47 @@ impl Default for AmbientLight {
     }
 }
 
+/// The curve that maps scene light onto the display.
+///
+/// ACES is the default because the reference captures come from a UE5 game,
+/// whose filmic tonemapper is ACES-derived (owner decision, 2026-10-09). AgX
+/// desaturates bright, saturated light more gracefully and is kept selectable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Tonemapper {
+    #[default]
+    AcesFitted,
+    Agx,
+}
+
+/// How the HDR scene becomes a display image. Engine data, read by the
+/// tonemap pass each frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PostSettings {
+    /// Exposure in stops: +1 doubles the light reaching the tonemapper. A
+    /// non-finite value is ignored, and the value is clamped to ±16.
+    pub exposure_ev: f32,
+    pub tonemapper: Tonemapper,
+}
+
+impl Default for PostSettings {
+    fn default() -> Self {
+        Self {
+            exposure_ev: DEFAULT_EXPOSURE_EV,
+            tonemapper: Tonemapper::default(),
+        }
+    }
+}
+
+/// The exposure a frame gets unless the engine sets one.
+///
+/// The slice's lighting was authored for a display that showed linear values
+/// clamped at 1, with no tonemapper. ACES darkens mid-tones (18 percent grey
+/// lands at about 10.6 percent at 0 EV). 0.55 EV, solved from the ACES fit,
+/// puts 18 percent grey back within a code value of where it was, so authored
+/// scenes keep their overall brightness while highlights roll off instead of
+/// clipping. A test in `post::tonemap` holds that.
+pub const DEFAULT_EXPOSURE_EV: f32 = 0.55;
+
 /// One mesh drawn once, with its transform already resolved to world space.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DrawCommand {
@@ -167,6 +208,8 @@ pub struct RenderFrame {
     /// tests depth without writing it. An empty list means no debug pass is
     /// recorded at all, so a frame that draws none costs nothing.
     pub debug_lines: Vec<DebugVertex>,
+    /// Exposure and tonemapping for this frame.
+    pub post: PostSettings,
 }
 
 const IDENTITY: [[f32; 4]; 4] = [
@@ -185,6 +228,7 @@ impl RenderFrame {
             ambient: AmbientLight::default(),
             draws: Vec::new(),
             debug_lines: Vec::new(),
+            post: PostSettings::default(),
         }
     }
 

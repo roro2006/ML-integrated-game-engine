@@ -18,12 +18,12 @@
 //   @location(2) uv        Float32x2   offset 24
 //   @location(3) colour    Float32x3   offset 32   (linear RGB; white if unset)
 //
-// COLOUR SPACE: the surface is configured with an sRGB format, so the GPU
-// applies the linear -> sRGB transfer function when it writes the render
-// target. Everything below — light colours, ambient, base colour, and the
-// value returned by `fs_main` — is LINEAR. Do NOT add gamma correction here
-// (no `pow(colour, vec3(1.0 / 2.2))`); that would double-encode and wash the
-// image out. If the picture ever looks wrong, check the surface format first.
+// COLOUR SPACE: this shader writes the Rgba16Float HDR scene target, not the
+// swapchain. Everything below — light colours, ambient, base colour, and the
+// value returned by `fs_main` — is LINEAR scene light, and may exceed 1. The
+// tonemap pass (tonemap.wgsl) applies exposure and the tonemapping curve, and
+// the sRGB encode happens once, there or in the swapchain format. Do NOT clamp,
+// tonemap or gamma-correct here; any of those would be applied twice.
 
 // Per-frame constants. `light_direction.xyz` points TO the light (i.e. it is
 // the negated direction the light travels), which is what the Lambert dot
@@ -104,6 +104,6 @@ fn fs_main(fragment: VertexOutput) -> @location(0) vec4<f32> {
     // same on the lit and the shadowed side of a body. Amount 0 is a no-op.
     let flashed = mix(lit, draw.flash.rgb, clamp(draw.flash.w, 0.0, 1.0));
 
-    // Linear out — see the COLOUR SPACE note at the top of this file.
+    // Linear scene light out — see the COLOUR SPACE note at the top.
     return vec4<f32>(flashed, draw.base_color.w);
 }

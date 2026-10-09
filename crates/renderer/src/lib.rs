@@ -34,6 +34,7 @@ mod mesh;
 mod mesh_data;
 mod passes;
 mod pipeline;
+mod post;
 mod registry;
 mod shaders;
 #[cfg(test)]
@@ -42,7 +43,8 @@ mod uniforms;
 
 pub use debug_lines::DebugVertex;
 pub use frame::{
-    AmbientLight, DirectionalLight, DrawCommand, MaterialDesc, MaterialHandle, MeshHandle, RenderFrame,
+    AmbientLight, DEFAULT_EXPOSURE_EV, DirectionalLight, DrawCommand, MaterialDesc, MaterialHandle,
+    MeshHandle, PostSettings, RenderFrame, Tonemapper,
 };
 pub use image::Image;
 pub use mesh::MeshInfo;
@@ -56,6 +58,7 @@ use std::time::{Duration, Instant};
 use graph::resources::TexturePool;
 use material::GpuMaterial;
 use mesh::GpuMesh;
+use post::tonemap;
 use registry::Registry;
 
 use wgpu::rwh::{HasDisplayHandle, HasWindowHandle};
@@ -306,6 +309,13 @@ pub struct Renderer {
     debug_capacity: u32,
     /// Reused between frames, like `draw_staging`.
     debug_staging: Vec<u8>,
+
+    /// The tonemap pass: HDR scene to swapchain. Its bind group points at a
+    /// pooled texture, so it is built per frame from this layout.
+    tonemap_layout: wgpu::BindGroupLayout,
+    tonemap_pipeline_layout: wgpu::PipelineLayout,
+    tonemap_pipeline: wgpu::RenderPipeline,
+    post_buffer: wgpu::Buffer,
 }
 
 impl Renderer {
@@ -421,7 +431,7 @@ impl Renderer {
                 .source(shaders::LIT)
                 .map_err(RenderError::Shader)?
                 .into_owned();
-            pipeline::create_pipeline(&device, &pipeline_layout, &source, color_format).map_err(
+            pipeline::create_pipeline(&device, &pipeline_layout, &source, passes::HDR_FORMAT).map_err(
                 |message| RenderError::ShaderCompile {
                     shader: shaders::LIT.to_owned(),
                     message,
@@ -453,6 +463,16 @@ impl Renderer {
         };
         let debug_vertex_buffer =
             debug_lines::create_vertex_buffer(&device, debug_lines::INITIAL_VERTEX_CAPACITY);
+
+        let tonemap_layout = tonemap::bind_group_layout(&device);
+        let tonemap_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("tonemap-pipeline-layout"),
+            bind_group_layouts: &[Some(&tonemap_layout)],
+            immediate_size: 0,
+        });
+        let tonemap_pipeline =
+            build_tonemap_pipeline(&device, &mut shaders, &tonemap_pipeline_layout, color_format)?;
+        let post_buffer = tonemap::create_post_buffer(&device);
 
         // Read from the device rather than assumed: 256 is the common value for
         // `min_uniform_buffer_offset_alignment`, but it is a limit precisely
@@ -492,6 +512,10 @@ impl Renderer {
             debug_vertex_buffer,
             debug_capacity: debug_lines::INITIAL_VERTEX_CAPACITY,
             debug_staging: Vec::new(),
+            tonemap_layout,
+            tonemap_pipeline_layout,
+            tonemap_pipeline,
+            post_buffer,
         };
         renderer.configure_output();
         Ok(renderer)
@@ -606,13 +630,20 @@ impl Renderer {
     /// pipeline in place.
     pub fn enable_shader_hot_reload(&mut self, shader_dir: PathBuf) -> Result<(), RenderError> {
         self.shaders = ShaderLibrary::new(Some(shader_dir));
-        // Both pipelines are rebuilt before either is installed, so a directory
+        // Every pipeline is rebuilt before any is installed, so a directory
         // holding one good shader and one broken one leaves the renderer on the
-        // pair that already works instead of a mismatched half.
+        // set that already works instead of a mismatched half.
         let pipeline = self.build_lit_pipeline()?;
         let debug_pipeline = self.build_debug_pipeline()?;
+        let tonemap_pipeline = build_tonemap_pipeline(
+            &self.device,
+            &mut self.shaders,
+            &self.tonemap_pipeline_layout,
+            self.color_format,
+        )?;
         self.pipeline = pipeline;
         self.debug_pipeline = debug_pipeline;
+        self.tonemap_pipeline = tonemap_pipeline;
         self.shader_error = None;
         Ok(())
     }
@@ -647,7 +678,7 @@ impl Renderer {
             .source(shaders::LIT)
             .map_err(RenderError::Shader)?
             .into_owned();
-        pipeline::create_pipeline(&self.device, &self.pipeline_layout, &source, self.color_format).map_err(
+        pipeline::create_pipeline(&self.device, &self.pipeline_layout, &source, passes::HDR_FORMAT).map_err(
             |message| RenderError::ShaderCompile {
                 shader: shaders::LIT.to_owned(),
                 message,
@@ -694,6 +725,22 @@ impl Renderer {
             match self.build_debug_pipeline() {
                 Ok(pipeline) => {
                     self.debug_pipeline = pipeline;
+                    self.shader_error = None;
+                }
+                Err(error) => self.shader_error = Some(error.to_string()),
+            }
+        }
+        // `changed` names the tonemap shader when it or `colour.wgsl` changed.
+        if changed.iter().any(|name| name == shaders::TONEMAP) {
+            let rebuilt = build_tonemap_pipeline(
+                &self.device,
+                &mut self.shaders,
+                &self.tonemap_pipeline_layout,
+                self.color_format,
+            );
+            match rebuilt {
+                Ok(pipeline) => {
+                    self.tonemap_pipeline = pipeline;
                     self.shader_error = None;
                 }
                 Err(error) => self.shader_error = Some(error.to_string()),
@@ -821,6 +868,8 @@ impl Renderer {
             0,
             &uniforms::globals_bytes(&frame.view_proj, &frame.light, &frame.ambient),
         );
+        self.queue
+            .write_buffer(&self.post_buffer, 0, &tonemap::post_bytes(&frame.post));
         if !plan.draws.is_empty() {
             self.queue.write_buffer(&self.draw_buffer, 0, &self.draw_staging);
         }
@@ -1035,6 +1084,23 @@ impl Target {
         };
         texture.create_view(&wgpu::TextureViewDescriptor::default())
     }
+}
+
+/// Builds the tonemap pipeline for a `format` swapchain. A compile error names
+/// the file and line it came from, which may be in an included snippet.
+fn build_tonemap_pipeline(
+    device: &wgpu::Device,
+    shaders: &mut ShaderLibrary,
+    layout: &wgpu::PipelineLayout,
+    format: wgpu::TextureFormat,
+) -> Result<wgpu::RenderPipeline, RenderError> {
+    let expanded = shaders.expanded(shaders::TONEMAP).map_err(RenderError::Shader)?;
+    tonemap::create_pipeline(device, layout, &expanded.text, format).map_err(|message| {
+        RenderError::ShaderCompile {
+            shader: shaders::TONEMAP.to_owned(),
+            message: expanded.annotate(&message),
+        }
+    })
 }
 
 fn create_instance(config: RendererConfig) -> wgpu::Instance {

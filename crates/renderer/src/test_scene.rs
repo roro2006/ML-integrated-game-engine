@@ -260,20 +260,34 @@ fn the_painted_cube_is_a_valid_mesh_on_the_ground() {
 
 #[test]
 #[ignore = "requires a GPU adapter and driver"]
-fn the_clear_colour_reads_back_display_encoded() {
+fn a_headless_frame_reads_back_whole_and_in_rgba_order() {
+    use crate::post::tonemap::mirror::display_code;
+
     let mut renderer = headless();
-    // Linear 0.214 encodes to sRGB 0.4999, code 127 or 128 depending on rounding.
-    let frame = RenderFrame::new(IDENTITY, Color::rgb(0.214, 0.0, 1.0));
+    // Pure scene red and blue: any channel swap in the readback (the window
+    // swapchain is BGRA) or a lost row would show here.
+    let scene = [3.0, 0.0, 0.5];
+    let frame = RenderFrame::new(IDENTITY, Color::rgb(3.0, 0.0, 0.5));
     let image = renderer
         .render_to_image(&frame)
         .expect("a headless frame reads back");
+    let [want_r, want_g, want_b] = display_code(scene, &frame.post);
 
     assert_eq!((image.width, image.height), (WIDTH, HEIGHT));
     assert_eq!(image.rgba8.len(), (WIDTH * HEIGHT * 4) as usize);
+    assert!(
+        want_r > want_b && want_b > want_g,
+        "the expectation itself is lopsided"
+    );
     for (x, y) in [(0, 0), (WIDTH - 1, 0), (0, HEIGHT - 1), (WIDTH - 1, HEIGHT - 1)] {
         let [r, g, b, a] = image.pixel(x, y).expect("in bounds");
-        assert!((127..=128).contains(&r), "red at ({x}, {y}) was {r}");
-        assert_eq!((g, b, a), (0, 255, 255), "at ({x}, {y})");
+        assert!(
+            r.abs_diff(want_r) <= 1 && g.abs_diff(want_g) <= 1 && b.abs_diff(want_b) <= 1,
+            "({x}, {y}) was {:?}, expected {:?}",
+            [r, g, b],
+            [want_r, want_g, want_b]
+        );
+        assert_eq!(a, 255, "opaque at ({x}, {y})");
     }
 }
 
@@ -302,6 +316,53 @@ fn an_oversized_headless_renderer_is_an_error_not_a_panic() {
     let mut renderer = headless();
     renderer.resize(1 << 20, 16);
     assert!(renderer.render_to_image(&RenderFrame::default()).is_err());
+}
+
+/// Holds the tonemap shader to its CPU mirror: a frame with no geometry is
+/// all clear colour, so every pixel is one known scene value run through
+/// exposure, the curve and the sRGB encode. Covers the 18 percent grey
+/// acceptance check of E1 among the values.
+#[test]
+#[ignore = "requires a GPU adapter and driver"]
+fn the_tonemap_pass_matches_its_cpu_mirror() {
+    use crate::post::tonemap::mirror::display_code;
+    use crate::{PostSettings, Tonemapper};
+
+    let mut renderer = headless();
+    let scenes: [[f32; 3]; 5] = [
+        [0.18, 0.18, 0.18],
+        [0.0, 0.0, 0.0],
+        [1.0, 1.0, 1.0],
+        [4.0, 4.0, 4.0],
+        [2.0, 0.3, 0.05],
+    ];
+    for tonemapper in [Tonemapper::AcesFitted, Tonemapper::Agx] {
+        for exposure_ev in [0.0, 1.0, -2.0] {
+            let settings = PostSettings {
+                exposure_ev,
+                tonemapper,
+            };
+            for scene in scenes {
+                let mut frame = RenderFrame::new(
+                    IDENTITY,
+                    Color::rgb(f64::from(scene[0]), f64::from(scene[1]), f64::from(scene[2])),
+                );
+                frame.post = settings;
+                let image = renderer
+                    .render_to_image(&frame)
+                    .expect("a headless frame reads back");
+                let [r, g, b, _] = image.pixel(WIDTH / 2, HEIGHT / 2).expect("in bounds");
+                let expected = display_code(scene, &settings);
+                for (got, want) in [r, g, b].into_iter().zip(expected) {
+                    assert!(
+                        got.abs_diff(want) <= 1,
+                        "{tonemapper:?} at {exposure_ev} EV, scene {scene:?}: got {:?}, expected {expected:?}",
+                        [r, g, b]
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// The reference every later pass change is held to. Re-captured only on
