@@ -282,6 +282,7 @@ fn unit_quad() -> MeshData {
         uvs: vec![[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]],
         colors: vec![[1.0, 1.0, 1.0]; 4],
         indices: vec![0, 1, 2, 0, 2, 3],
+        ..MeshData::default()
     }
 }
 

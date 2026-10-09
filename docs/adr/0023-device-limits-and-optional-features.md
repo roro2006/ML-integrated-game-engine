@@ -11,7 +11,7 @@
 ## Decision
 
 1. **Downlevel is the floor.** Device creation always starts from `Limits::downlevel_defaults()`. A renderer that runs only on the floor is a working renderer.
-2. **Optional features are requested only when the adapter reports them.** The set is `TEXTURE_COMPRESSION_BC` and `TEXTURE_BINDING_ARRAY` today. `required_features` is the intersection of that set with `adapter.features()`, so asking can never fail device creation. What was granted is reported to the engine as `AdapterInfo::features` (`GpuFeatures`).
+2. **Optional features are requested only when the adapter reports them, and only once something uses or reports them.** The set is `TEXTURE_COMPRESSION_BC` today; `TEXTURE_BINDING_ARRAY` joins with the bindless material path, since enabling a feature can change which driver paths run. `required_features` is the intersection of that set with `adapter.features()`, so asking can never fail device creation. What the device was created with is read back from it and reported to the engine as `AdapterInfo::features` (`GpuFeatures`).
 3. **Named limits are raised from the adapter when a work item needs them**, one by one, each with its own fallback, rather than requesting the adapter's full limits. Resolution-derived limits are raised today; others join when B5, C2 or C5 needs them, and this ADR is amended with each.
 4. **Every feature use has a path without it.** Uncompressed RGBA8 stands in for BC data, and one bind group per material stands in for binding arrays. Quality tiers choose between paths; they never assume a feature.
 

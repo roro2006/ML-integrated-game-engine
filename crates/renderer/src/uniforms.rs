@@ -17,12 +17,14 @@
 //! every member starts on a 16-byte boundary, so no implicit padding is ever
 //! inserted between the members below.
 
-use crate::frame::{AmbientLight, DirectionalLight, DrawCommand};
+use crate::frame::{DrawCommand, RenderFrame};
 use crate::material::BaseColor;
 use crate::registry::{PlannedDraw, Registry};
 
-/// `Globals`: `view_proj` (64) + three `vec4<f32>` (48).
-pub(crate) const GLOBALS_SIZE: usize = 112;
+/// `Globals`: `view_proj` (64), light direction, light colour and ambient
+/// (three `vec4<f32>`, 48), camera position (16), `inv_view_proj` (64) and
+/// `prev_view_proj` (64).
+pub(crate) const GLOBALS_SIZE: usize = 256;
 
 /// `DrawData`: `model` (64) + `normal_matrix` (64) + `base_color` (16) +
 /// `flash` (16).
@@ -96,14 +98,58 @@ fn write_mat4(out: &mut [u8], offset: usize, value: &[[f32; 4]; 4]) {
     }
 }
 
+type Mat4 = [[f32; 4]; 4];
+
+const IDENTITY: Mat4 = [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.0],
+    [0.0, 0.0, 0.0, 1.0],
+];
+
+/// The inverse of a column-major 4x4 matrix, or `None` if it is singular.
+///
+/// Cofactor expansion in `f64`, then narrowed: a view-projection with a far
+/// plane hundreds of metres out loses enough precision in `f32` to show in
+/// reconstructed positions.
+pub(crate) fn inverse(m: &Mat4) -> Option<Mat4> {
+    // a[row][column], from the column-major input.
+    let a: [[f64; 4]; 4] = std::array::from_fn(|row| std::array::from_fn(|column| f64::from(m[column][row])));
+    let minor = |skip_row: usize, skip_column: usize| -> f64 {
+        let rows: Vec<usize> = (0..4).filter(|&row| row != skip_row).collect();
+        let columns: Vec<usize> = (0..4).filter(|&column| column != skip_column).collect();
+        let e = |r: usize, c: usize| a[rows[r]][columns[c]];
+        e(0, 0) * (e(1, 1) * e(2, 2) - e(1, 2) * e(2, 1)) - e(0, 1) * (e(1, 0) * e(2, 2) - e(1, 2) * e(2, 0))
+            + e(0, 2) * (e(1, 0) * e(2, 1) - e(1, 1) * e(2, 0))
+    };
+    let cofactor = |row: usize, column: usize| {
+        let sign = if (row + column).is_multiple_of(2) {
+            1.0
+        } else {
+            -1.0
+        };
+        sign * minor(row, column)
+    };
+    let determinant: f64 = (0..4).map(|column| a[0][column] * cofactor(0, column)).sum();
+    if !determinant.is_finite() || determinant.abs() < 1e-12 {
+        return None;
+    }
+    // inverse[row][column] = cofactor(column, row) / det; stored column-major.
+    Some(std::array::from_fn(|column| {
+        std::array::from_fn(|row| (cofactor(column, row) / determinant) as f32)
+    }))
+}
+
 /// Builds the `Globals` block for one frame.
-pub(crate) fn globals_bytes(
-    view_proj: &[[f32; 4]; 4],
-    light: &DirectionalLight,
-    ambient: &AmbientLight,
-) -> [u8; GLOBALS_SIZE] {
+///
+/// A singular `view_proj` has no inverse; identity is written instead, so a
+/// shader reconstructing positions gets nonsense for that frame rather than
+/// infinities.
+pub(crate) fn globals_bytes(frame: &RenderFrame) -> [u8; GLOBALS_SIZE] {
+    let light = &frame.light;
+    let ambient = &frame.ambient;
     let mut out = [0_u8; GLOBALS_SIZE];
-    write_mat4(&mut out, 0, view_proj);
+    write_mat4(&mut out, 0, &frame.view_proj);
     // `w` of the direction is unused by the shader; the light's intensity rides
     // in `light_color.w` and the ambient intensity in `ambient_color.w`.
     write_vec4(
@@ -126,6 +172,10 @@ pub(crate) fn globals_bytes(
             ambient.intensity,
         ],
     );
+    let [x, y, z] = frame.camera_position;
+    write_vec4(&mut out, 112, [x, y, z, 1.0]);
+    write_mat4(&mut out, 128, &inverse(&frame.view_proj).unwrap_or(IDENTITY));
+    write_mat4(&mut out, 192, &frame.prev_view_proj);
     out
 }
 
@@ -184,7 +234,7 @@ pub(crate) fn pack_draw_uniforms<M: BaseColor>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::frame::{MaterialHandle, MeshHandle};
+    use crate::frame::{AmbientLight, DirectionalLight, MaterialHandle, MeshHandle};
     use crate::material::GpuMaterial;
 
     const IDENTITY: [[f32; 4]; 4] = [
@@ -203,7 +253,10 @@ mod tests {
     #[test]
     fn blocks_have_the_sizes_the_shader_declares() {
         assert_eq!(DRAW_DATA_SIZE, 160, "lit.wgsl documents DrawData as 160 bytes");
-        assert_eq!(GLOBALS_SIZE, 112);
+        assert_eq!(
+            GLOBALS_SIZE, 256,
+            "lit.wgsl and debug_line.wgsl declare the same Globals"
+        );
     }
 
     /// The uniform address space requires each member to start on a 16-byte
@@ -215,9 +268,10 @@ mod tests {
         for size in [GLOBALS_SIZE, DRAW_DATA_SIZE] {
             assert_eq!(size % 16, 0, "block size {size} is not a multiple of 16");
         }
-        // Globals: view_proj @0, light_direction @64, light_color @80, ambient @96.
+        // Globals: view_proj @0, light_direction @64, light_color @80, ambient @96,
+        // camera_position @112, inv_view_proj @128, prev_view_proj @192.
         // DrawData: model @0, normal_matrix @64, base_color @128, flash @144.
-        for offset in [0, 64, 80, 96, 128, 144] {
+        for offset in [0, 64, 80, 96, 112, 128, 144, 192] {
             assert_eq!(offset % 16, 0, "member offset {offset} is not 16-byte aligned");
         }
     }
@@ -233,7 +287,12 @@ mod tests {
             color: [0.1, 0.2, 0.3],
             intensity: 0.5,
         };
-        let bytes = globals_bytes(&IDENTITY, &light, &ambient);
+        let mut frame = RenderFrame::new(IDENTITY, crate::Color::BLACK);
+        frame.light = light;
+        frame.ambient = ambient;
+        frame.camera_position = [4.0, 5.0, 6.0];
+        frame.prev_view_proj[3] = [7.0, 8.0, 9.0, 1.0];
+        let bytes = globals_bytes(&frame);
 
         // Column-major identity: 1.0 at 0, 20, 40, 60.
         for column in 0..4 {
@@ -248,6 +307,48 @@ mod tests {
             0.5,
             "ambient intensity in ambient_color.w"
         );
+        assert_eq!(read_f32(&bytes, 112), 4.0, "camera_position.x");
+        assert_eq!(read_f32(&bytes, 112 + 8), 6.0, "camera_position.z");
+        assert_eq!(read_f32(&bytes, 128), 1.0, "the inverse of identity is identity");
+        assert_eq!(read_f32(&bytes, 192 + 48), 7.0, "prev_view_proj translation x");
+    }
+
+    fn multiply(a: &Mat4, b: &Mat4) -> Mat4 {
+        std::array::from_fn(|column| {
+            std::array::from_fn(|row| (0..4).map(|k| a[k][row] * b[column][k]).sum())
+        })
+    }
+
+    #[test]
+    fn a_matrix_times_its_inverse_is_identity() {
+        // A perspective projection times a look-at view, like a real frame.
+        let view_proj: Mat4 = [
+            [1.2, 0.1, -0.4, -0.39],
+            [0.0, 1.6, 0.3, 0.3],
+            [-0.5, 0.2, -0.9, -0.88],
+            [0.3, -1.1, 6.2, 6.4],
+        ];
+        let inverse = inverse(&view_proj).expect("invertible");
+        let product = multiply(&view_proj, &inverse);
+        for (column, values) in product.iter().enumerate() {
+            for (row, value) in values.iter().enumerate() {
+                let expected = if row == column { 1.0 } else { 0.0 };
+                assert!((value - expected).abs() < 1e-4, "[{column}][{row}] = {value}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_singular_matrix_has_no_inverse_and_identity_is_written() {
+        let flat: Mat4 = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0; 4],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        assert_eq!(inverse(&flat), None);
+        let bytes = globals_bytes(&RenderFrame::new(flat, crate::Color::BLACK));
+        assert_eq!(read_f32(&bytes, 128 + 40), 1.0, "identity stands in");
     }
 
     #[test]

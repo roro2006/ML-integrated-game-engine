@@ -42,7 +42,7 @@ pub enum ColorSpace {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mips {
     /// One level only, for UI images and other textures seen at one size.
-    None,
+    Single,
     /// Generate the full chain from the uploaded level.
     Generate,
 }
@@ -57,6 +57,7 @@ pub struct TextureDesc {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TextureError {
     ZeroSize,
     /// Larger than the device's biggest 2D texture.
@@ -68,6 +69,8 @@ pub enum TextureError {
         expected: usize,
         actual: usize,
     },
+    /// The device refused the texture, usually for want of memory.
+    Device(String),
 }
 
 impl fmt::Display for TextureError {
@@ -78,6 +81,7 @@ impl fmt::Display for TextureError {
             Self::DataLength { expected, actual } => {
                 write!(f, "expected {expected} bytes of RGBA8 texels, got {actual}")
             }
+            Self::Device(message) => write!(f, "the device refused the texture: {message}"),
         }
     }
 }
@@ -155,7 +159,29 @@ pub(crate) struct GpuTexture {
 }
 
 /// Creates the texture, uploads level 0, and generates the rest of the chain.
+///
+/// Inside error scopes: a texture within the size limit can still be more
+/// than the device has memory for, and wgpu's default handler would abort the
+/// process rather than let the caller refuse one bad asset.
 pub(crate) fn upload(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    mips: &MipGenerator,
+    desc: &TextureDesc,
+    texels: &[u8],
+) -> Result<GpuTexture, TextureError> {
+    let out_of_memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let uploaded = upload_unscoped(device, queue, mips, desc, texels);
+    let validation_error = block_on(validation.pop());
+    let memory_error = block_on(out_of_memory.pop());
+    match validation_error.or(memory_error) {
+        Some(error) => Err(TextureError::Device(error.to_string())),
+        None => Ok(uploaded),
+    }
+}
+
+fn upload_unscoped(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     mips: &MipGenerator,
@@ -164,7 +190,7 @@ pub(crate) fn upload(
 ) -> GpuTexture {
     let format = format_for(desc.color_space);
     let mip_levels = match desc.mips {
-        Mips::None => 1,
+        Mips::Single => 1,
         Mips::Generate => mip_count(desc.width, desc.height),
     };
     let size = wgpu::Extent3d {
@@ -179,12 +205,7 @@ pub(crate) fn upload(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format,
-        // Mip generation renders into the lower levels; copies out are for
-        // tests and tools that read a texture back.
-        usage: wgpu::TextureUsages::TEXTURE_BINDING
-            | wgpu::TextureUsages::COPY_DST
-            | wgpu::TextureUsages::COPY_SRC
-            | wgpu::TextureUsages::RENDER_ATTACHMENT,
+        usage: usage(mip_levels),
         view_formats: &[],
     });
     queue.write_texture(
@@ -213,6 +234,20 @@ pub(crate) fn upload(
         height: desc.height,
         mip_levels,
     }
+}
+
+/// What a texture is used for. Render-attachment use is asked for only when
+/// mips are generated into it, since some drivers store attachments less
+/// compactly; copying out is for the readback tests only.
+fn usage(mip_levels: u32) -> wgpu::TextureUsages {
+    let mut usage = wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST;
+    if mip_levels > 1 {
+        usage |= wgpu::TextureUsages::RENDER_ATTACHMENT;
+    }
+    if cfg!(test) {
+        usage |= wgpu::TextureUsages::COPY_SRC;
+    }
+    usage
 }
 
 /// Builds mip chains: one downsample pipeline per texture format.
@@ -433,7 +468,7 @@ mod tests {
                     width: 3,
                     height: 2,
                     color_space: ColorSpace::Linear,
-                    mips: Mips::None,
+                    mips: Mips::Single,
                 },
                 &texels,
             )
@@ -555,6 +590,13 @@ mod tests {
             (1, 1),
             "a shift past the width is not a panic"
         );
+    }
+
+    #[test]
+    fn only_a_mipped_texture_can_be_rendered_into() {
+        assert!(!usage(1).contains(wgpu::TextureUsages::RENDER_ATTACHMENT));
+        assert!(usage(4).contains(wgpu::TextureUsages::RENDER_ATTACHMENT));
+        assert!(usage(1).contains(wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST));
     }
 
     #[test]

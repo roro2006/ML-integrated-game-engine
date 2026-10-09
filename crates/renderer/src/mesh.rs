@@ -70,24 +70,24 @@ mod tests {
             positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 2.0, 0.0]],
             normals: vec![[0.0, 0.0, 1.0]; 3],
             uvs: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
-            colors: Vec::new(),
             indices: vec![0, 1, 2],
+            ..MeshData::default()
         }
     }
 
     #[test]
-    fn vertex_bytes_are_forty_four_per_vertex() {
+    fn vertex_bytes_are_sixty_four_per_vertex() {
         let mesh = triangle();
         let bytes = float_bytes(&mesh.interleaved());
         assert_eq!(
             bytes.len(),
-            mesh.vertex_count() * 44,
-            "the vertex layout is 11 floats per vertex"
+            mesh.vertex_count() * 64,
+            "the vertex layout is 16 floats per vertex"
         );
 
-        // The second vertex starts at byte 44 with position.x == 1.0.
+        // The second vertex starts at byte 64 with position.x == 1.0.
         let mut word = [0_u8; 4];
-        word.copy_from_slice(&bytes[44..48]);
+        word.copy_from_slice(&bytes[64..68]);
         assert_eq!(f32::from_le_bytes(word), 1.0);
     }
 

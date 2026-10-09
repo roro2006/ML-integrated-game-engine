@@ -42,6 +42,7 @@ mod registry;
 )]
 mod sampler;
 mod shaders;
+mod tangents;
 #[cfg(test)]
 mod test_scene;
 mod texture;
@@ -174,19 +175,18 @@ pub struct GpuFeatures {
     /// BC1 to BC7 block-compressed textures: desktop GPUs have them, some
     /// integrated and mobile ones do not.
     pub bc_compression: bool,
-    /// Arrays of textures in one binding, for a later bindless material path.
-    pub texture_binding_array: bool,
 }
 
 /// The optional features the renderer asks for when the adapter offers them.
-const OPTIONAL_FEATURES: wgpu::Features =
-    wgpu::Features::TEXTURE_COMPRESSION_BC.union(wgpu::Features::TEXTURE_BINDING_ARRAY);
+///
+/// Only what something uses or reports: a feature can change which driver
+/// paths are taken, so texture binding arrays wait for the bindless path.
+const OPTIONAL_FEATURES: wgpu::Features = wgpu::Features::TEXTURE_COMPRESSION_BC;
 
 impl GpuFeatures {
     fn from_wgpu(features: wgpu::Features) -> Self {
         Self {
             bc_compression: features.contains(wgpu::Features::TEXTURE_COMPRESSION_BC),
-            texture_binding_array: features.contains(wgpu::Features::TEXTURE_BINDING_ARRAY),
         }
     }
 }
@@ -409,14 +409,8 @@ impl Renderer {
             surface,
             config: surface_config,
         };
-        Self::assemble(
-            device,
-            queue,
-            adapter_info(&adapter),
-            output,
-            format,
-            (width, height),
-        )
+        let info = adapter_info(&adapter, &device);
+        Self::assemble(device, queue, info, output, format, (width, height))
     }
 
     /// Creates a renderer with no window, drawing into an offscreen texture of
@@ -453,14 +447,8 @@ impl Renderer {
             )));
         }
         let output = Output::Offscreen { texture: None };
-        Self::assemble(
-            device,
-            queue,
-            adapter_info(&adapter),
-            output,
-            format,
-            (width, height),
-        )
+        let info = adapter_info(&adapter, &device);
+        Self::assemble(device, queue, info, output, format, (width, height))
     }
 
     /// Builds the pipelines and per-frame resources shared by every output.
@@ -687,7 +675,8 @@ impl Renderer {
     ) -> Result<TextureHandle, RenderError> {
         let max = self.device.limits().max_texture_dimension_2d;
         texture::validate(desc, texels, max).map_err(RenderError::TextureUpload)?;
-        let uploaded = texture::upload(&self.device, &self.queue, &self.mips, desc, texels);
+        let uploaded = texture::upload(&self.device, &self.queue, &self.mips, desc, texels)
+            .map_err(RenderError::TextureUpload)?;
         Ok(self.textures.insert(uploaded))
     }
 
@@ -976,11 +965,8 @@ impl Renderer {
             Acquired::Skipped(reason) => return Ok(FrameOutcome::Skipped(reason)),
         };
 
-        self.queue.write_buffer(
-            &self.globals_buffer,
-            0,
-            &uniforms::globals_bytes(&frame.view_proj, &frame.light, &frame.ambient),
-        );
+        self.queue
+            .write_buffer(&self.globals_buffer, 0, &uniforms::globals_bytes(frame));
         self.queue
             .write_buffer(&self.post_buffer, 0, &tonemap::post_bytes(&frame.post));
         if !plan.draws.is_empty() {
@@ -1275,7 +1261,9 @@ fn request_device(adapter: &wgpu::Adapter) -> Result<(wgpu::Device, wgpu::Queue)
     .map_err(|error| RenderError::RequestDevice(error.to_string()))
 }
 
-fn adapter_info(adapter: &wgpu::Adapter) -> AdapterInfo {
+/// What was selected, with the features the device was actually created
+/// with, read back rather than recomputed so the report cannot drift.
+fn adapter_info(adapter: &wgpu::Adapter, device: &wgpu::Device) -> AdapterInfo {
     let info = adapter.get_info();
     AdapterInfo {
         name: info.name.clone(),
@@ -1288,7 +1276,7 @@ fn adapter_info(adapter: &wgpu::Adapter) -> AdapterInfo {
             wgpu::DeviceType::Other => DeviceKind::Other,
         },
         driver: format!("{} {}", info.driver, info.driver_info).trim().to_owned(),
-        features: GpuFeatures::from_wgpu(adapter.features() & OPTIONAL_FEATURES),
+        features: GpuFeatures::from_wgpu(device.features()),
     }
 }
 

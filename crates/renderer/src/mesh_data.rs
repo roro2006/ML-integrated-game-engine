@@ -11,6 +11,15 @@
 //! | 1        | normal    | `Float32x3` |
 //! | 2        | uv        | `Float32x2` |
 //! | 3        | colour    | `Float32x3` |
+//! | 4        | tangent   | `Float32x4` |
+//! | 5        | wind      | `Float32`   |
+//!
+//! Tangent and wind were added together in one layout change (owner decision,
+//! M17): 64 bytes per vertex. The tangent's `w` is the handedness of the UV
+//! mapping. An empty `tangents` list means they are generated at upload from
+//! positions, normals and UVs (see `tangents.rs`); the asset cooker will
+//! supply MikkTSpace tangents instead (B6). Wind is how strongly a vertex
+//! sways, 0 to 1, for foliage (D2); empty means 0, so nothing sways.
 //!
 //! Colour is linear RGB per vertex (ADR-0017). It is how a low-poly model
 //! carries several flat colours in one mesh — a painted face, a trim band —
@@ -70,6 +79,8 @@ pub enum MeshDataError {
         normals: usize,
         uvs: usize,
         colors: usize,
+        tangents: usize,
+        wind: usize,
     },
     /// Indices must describe whole triangles.
     IndexCountNotTriangles(usize),
@@ -88,10 +99,13 @@ impl fmt::Display for MeshDataError {
                 normals,
                 uvs,
                 colors,
+                tangents,
+                wind,
             } => write!(
                 f,
                 "attribute lengths differ: {positions} positions, {normals} normals, {uvs} uvs, \
-                 {colors} colours (colours may also be empty)"
+                 {colors} colours, {tangents} tangents, {wind} wind weights (colours, tangents \
+                 and wind may also be empty)"
             ),
             Self::IndexCountNotTriangles(count) => {
                 write!(f, "index count {count} is not a multiple of 3")
@@ -114,14 +128,19 @@ pub struct MeshData {
     pub uvs: Vec<[f32; 2]>,
     /// Linear RGB per vertex, or empty for white. See the module docs.
     pub colors: Vec<[f32; 3]>,
+    /// Tangent per vertex, `w` the handedness, or empty to generate them.
+    pub tangents: Vec<[f32; 4]>,
+    /// Sway strength per vertex, or empty for none.
+    pub wind: Vec<f32>,
     pub indices: Vec<u32>,
 }
 
-/// Floats per interleaved vertex: position (3), normal (3), uv (2), colour (3).
+/// Floats per interleaved vertex: position (3), normal (3), uv (2), colour (3),
+/// tangent (4), wind (1).
 ///
 /// The one number the pipeline's vertex stride and the shader's layout comment
 /// are both derived from, so they cannot drift apart.
-pub const VERTEX_FLOATS: usize = 11;
+pub const VERTEX_FLOATS: usize = 16;
 
 /// The colour of a vertex whose mesh carries none.
 pub const WHITE: [f32; 3] = [1.0, 1.0, 1.0];
@@ -144,14 +163,21 @@ impl MeshData {
         if self.positions.is_empty() || self.indices.is_empty() {
             return Err(MeshDataError::Empty);
         }
-        let colors_ok = self.colors.is_empty() || self.colors.len() == self.positions.len();
-        if self.normals.len() != self.positions.len() || self.uvs.len() != self.positions.len() || !colors_ok
+        let count = self.positions.len();
+        let optional_ok = |len: usize| len == 0 || len == count;
+        if self.normals.len() != count
+            || self.uvs.len() != count
+            || !optional_ok(self.colors.len())
+            || !optional_ok(self.tangents.len())
+            || !optional_ok(self.wind.len())
         {
             return Err(MeshDataError::MismatchedAttributeLengths {
-                positions: self.positions.len(),
+                positions: count,
                 normals: self.normals.len(),
                 uvs: self.uvs.len(),
                 colors: self.colors.len(),
+                tangents: self.tangents.len(),
+                wind: self.wind.len(),
             });
         }
         if !self.indices.len().is_multiple_of(3) {
@@ -168,19 +194,46 @@ impl MeshData {
 
     /// Interleaves attributes into the vertex layout above: [`VERTEX_FLOATS`]
     /// floats per vertex.
+    ///
+    /// Tangents are generated here when the mesh carries none, so every mesh
+    /// that reaches the GPU has them.
     pub fn interleaved(&self) -> Vec<f32> {
+        let generated;
+        let tangents = if self.tangents.len() == self.positions.len() {
+            &self.tangents
+        } else {
+            generated = self.generated_tangents();
+            &generated
+        };
         let mut data = Vec::with_capacity(self.positions.len() * VERTEX_FLOATS);
         for vertex in 0..self.positions.len() {
             let position = self.positions[vertex];
             let normal = self.normals.get(vertex).copied().unwrap_or([0.0, 1.0, 0.0]);
             let uv = self.uvs.get(vertex).copied().unwrap_or([0.0, 0.0]);
             let color = self.colors.get(vertex).copied().unwrap_or(WHITE);
+            let tangent = tangents.get(vertex).copied().unwrap_or([1.0, 0.0, 0.0, 1.0]);
+            let wind = self.wind.get(vertex).copied().unwrap_or(0.0);
             data.extend_from_slice(&position);
             data.extend_from_slice(&normal);
             data.extend_from_slice(&uv);
             data.extend_from_slice(&color);
+            data.extend_from_slice(&tangent);
+            data.push(wind);
         }
         data
+    }
+
+    fn generated_tangents(&self) -> Vec<[f32; 4]> {
+        // Missing normals or UVs (an invalid mesh) still produce one tangent
+        // per vertex, so interleaving never reads past an array.
+        let count = self.positions.len();
+        let normals: Vec<[f32; 3]> = (0..count)
+            .map(|vertex| self.normals.get(vertex).copied().unwrap_or([0.0, 1.0, 0.0]))
+            .collect();
+        let uvs: Vec<[f32; 2]> = (0..count)
+            .map(|vertex| self.uvs.get(vertex).copied().unwrap_or([0.0, 0.0]))
+            .collect();
+        crate::tangents::generate(&self.positions, &normals, &uvs, &self.indices)
     }
 
     /// Paints every vertex one colour.
@@ -199,8 +252,8 @@ mod tests {
             positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 2.0, 0.0]],
             normals: vec![[0.0, 0.0, 1.0]; 3],
             uvs: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
-            colors: Vec::new(),
             indices: vec![0, 1, 2],
+            ..MeshData::default()
         }
     }
 
@@ -249,17 +302,43 @@ mod tests {
     }
 
     #[test]
-    fn interleaves_eleven_floats_per_vertex() {
+    fn interleaves_sixteen_floats_per_vertex() {
         let data = triangle().interleaved();
         assert_eq!(data.len(), 3 * VERTEX_FLOATS);
+        // u runs along +X and v along +Y on a +Z face: tangent +X, right-handed.
         assert_eq!(
-            &data[0..11],
-            &[0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0]
+            &data[0..16],
+            &[
+                0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0
+            ]
         );
         assert_eq!(
-            &data[11..22],
+            &data[16..27],
             &[1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0]
         );
+    }
+
+    #[test]
+    fn supplied_tangents_and_wind_are_used_as_given() {
+        let mut mesh = triangle();
+        mesh.tangents = vec![[0.0, 1.0, 0.0, -1.0]; 3];
+        mesh.wind = vec![0.25, 0.5, 1.0];
+        assert_eq!(mesh.validate(), Ok(()));
+        let data = mesh.interleaved();
+        assert_eq!(&data[11..16], &[0.0, 1.0, 0.0, -1.0, 0.25]);
+        assert_eq!(data[2 * VERTEX_FLOATS + 15], 1.0, "the last vertex's wind");
+
+        mesh.wind.pop();
+        assert!(matches!(
+            mesh.validate(),
+            Err(MeshDataError::MismatchedAttributeLengths { wind: 2, .. })
+        ));
+        mesh.wind.clear();
+        mesh.tangents.pop();
+        assert!(matches!(
+            mesh.validate(),
+            Err(MeshDataError::MismatchedAttributeLengths { tangents: 2, .. })
+        ));
     }
 
     /// Wave 1 must change nothing on screen: a mesh with no colours is white,

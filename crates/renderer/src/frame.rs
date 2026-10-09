@@ -36,6 +36,7 @@ impl TextureHandle {
         Self(index)
     }
 
+    /// The raw index, for diagnostics and tests.
     pub const fn index(self) -> u32 {
         self.0
     }
@@ -174,10 +175,9 @@ pub enum Tonemapper {
 /// How the HDR scene becomes a display image. Engine data, read by the
 /// tonemap pass each frame.
 ///
-/// Non-exhaustive so that bloom and grading can join it: build one with
-/// `PostSettings { exposure_ev: 1.0, ..PostSettings::default() }`.
+/// Build one with `PostSettings { exposure_ev: 1.0, ..PostSettings::default() }`
+/// so that bloom and grading fields can join it without breaking callers.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[non_exhaustive]
 pub struct PostSettings {
     /// Exposure in stops: +1 doubles the light reaching the tonemapper. A
     /// non-finite value means [`DEFAULT_EXPOSURE_EV`], and the value is
@@ -220,6 +220,11 @@ pub struct DrawCommand {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RenderFrame {
     pub view_proj: [[f32; 4]; 4],
+    /// Last frame's `view_proj`, for motion vectors (E2). Equal to
+    /// `view_proj` on a first frame or after a cut.
+    pub prev_view_proj: [[f32; 4]; 4],
+    /// The eye in world space, for view-dependent shading (specular, fog).
+    pub camera_position: [f32; 3],
     /// The background, as linear scene light: it is exposed and tonemapped
     /// with everything else, so (1, 1, 1) is a bright sky, not display white.
     /// [`Renderer::render_clear`](crate::Renderer::render_clear) takes a
@@ -252,6 +257,8 @@ impl RenderFrame {
     pub fn new(view_proj: [[f32; 4]; 4], clear_color: Color) -> Self {
         Self {
             view_proj,
+            prev_view_proj: view_proj,
+            camera_position: [0.0, 0.0, 0.0],
             clear_color,
             light: DirectionalLight::default(),
             ambient: AmbientLight::default(),

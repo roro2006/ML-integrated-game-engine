@@ -10,13 +10,15 @@
 //   @group(0) @binding(0)  Globals   uniform, one per frame
 //   @group(1) @binding(0)  DrawData  uniform, one per draw, dynamic offset
 //
-// Vertex buffer: interleaved, 11 floats (44 bytes) per vertex, matching
+// Vertex buffer: interleaved, 16 floats (64 bytes) per vertex, matching
 // `MeshData::interleaved` in crates/renderer/src/mesh_data.rs:
 //
 //   @location(0) position  Float32x3   offset 0
 //   @location(1) normal    Float32x3   offset 12
 //   @location(2) uv        Float32x2   offset 24
 //   @location(3) colour    Float32x3   offset 32   (linear RGB; white if unset)
+//   @location(4) tangent   Float32x4   offset 44   (not read here; for normal maps)
+//   @location(5) wind      Float32     offset 60   (not read here; for foliage)
 //
 // COLOUR SPACE: this shader writes the Rgba16Float HDR scene target, not the
 // swapchain. Everything below — light colours, ambient, base colour, and the
@@ -33,6 +35,9 @@ struct Globals {
     light_direction: vec4<f32>,  // xyz = normalized direction to the light, w unused
     light_color: vec4<f32>,      // rgb = linear colour, w = intensity
     ambient_color: vec4<f32>,    // rgb = linear colour, w = intensity
+    camera_position: vec4<f32>,  // xyz = world-space eye, w unused
+    inv_view_proj: mat4x4<f32>,  // clip to world, for depth reconstruction
+    prev_view_proj: mat4x4<f32>, // last frame's view_proj, for motion vectors
 }
 
 // Per-draw constants. `normal_matrix` is the inverse-transpose of `model`,

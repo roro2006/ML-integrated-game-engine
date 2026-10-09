@@ -36,6 +36,9 @@ struct Globals {
     light_direction: vec4<f32>,  // unused here; lines are unlit by design
     light_color: vec4<f32>,      // unused here
     ambient_color: vec4<f32>,    // unused here
+    camera_position: vec4<f32>,  // unused here
+    inv_view_proj: mat4x4<f32>,  // unused here
+    prev_view_proj: mat4x4<f32>, // unused here
 }
 
 @group(0) @binding(0) var<uniform> globals: Globals;

@@ -15,9 +15,10 @@ use crate::uniforms::{DRAW_DATA_SIZE, GLOBALS_SIZE};
 /// uses the lit pipeline.
 pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-/// Interleaved: position, normal, uv, colour. Offsets match
-/// `MeshData::interleaved`.
-const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 4] = [
+/// Interleaved: position, normal, uv, colour, tangent, wind. Offsets match
+/// `MeshData::interleaved`. A shader may declare a subset: `lit.wgsl` reads
+/// the first four and ignores tangent and wind.
+const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 6] = [
     wgpu::VertexAttribute {
         format: wgpu::VertexFormat::Float32x3,
         offset: 0,
@@ -37,6 +38,16 @@ const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 4] = [
         format: wgpu::VertexFormat::Float32x3,
         offset: 32,
         shader_location: 3,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x4,
+        offset: 44,
+        shader_location: 4,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32,
+        offset: 60,
+        shader_location: 5,
     },
 ];
 
@@ -81,8 +92,9 @@ pub(crate) fn draw_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Uniform,
                 has_dynamic_offset: true,
-                // The *binding* is 144 bytes even though the stride between
-                // draws is padded up to the device's alignment.
+                // The *binding* is one `DrawData` (DRAW_DATA_SIZE, 160 bytes)
+                // even though the stride between draws is padded up to the
+                // device's alignment.
                 min_binding_size: wgpu::BufferSize::new(DRAW_DATA_SIZE as u64),
             },
             count: None,
@@ -244,7 +256,7 @@ mod tests {
     #[test]
     fn the_vertex_layout_matches_the_interleaved_mesh_format() {
         let layout = vertex_layout();
-        assert_eq!(layout.array_stride, 44, "11 floats per vertex");
+        assert_eq!(layout.array_stride, 64, "16 floats per vertex");
         assert_eq!(layout.step_mode, wgpu::VertexStepMode::Vertex);
 
         let offsets: Vec<_> = layout
@@ -252,13 +264,19 @@ mod tests {
             .iter()
             .map(|attribute| (attribute.shader_location, attribute.offset))
             .collect();
-        assert_eq!(offsets, vec![(0, 0), (1, 12), (2, 24), (3, 32)]);
+        assert_eq!(offsets, vec![(0, 0), (1, 12), (2, 24), (3, 32), (4, 44), (5, 60)]);
         assert_eq!(layout.attributes[2].format, wgpu::VertexFormat::Float32x2);
         assert_eq!(
             layout.attributes[3].format,
             wgpu::VertexFormat::Float32x3,
             "vertex colour is linear RGB"
         );
+        assert_eq!(
+            layout.attributes[4].format,
+            wgpu::VertexFormat::Float32x4,
+            "tangent carries handedness in w"
+        );
+        assert_eq!(layout.attributes[5].format, wgpu::VertexFormat::Float32);
     }
 
     #[test]

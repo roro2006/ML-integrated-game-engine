@@ -336,6 +336,8 @@ struct Entry {
 #[derive(Debug, Default)]
 pub struct RenderExtractor {
     scratch: Vec<Entry>,
+    /// The view-projection of the last frame extracted.
+    previous_view_proj: Option<[[f32; 4]; 4]>,
 }
 
 impl Resource for RenderExtractor {}
@@ -357,7 +359,13 @@ impl RenderExtractor {
         let frustum = Frustum::from_view_projection(&view_projection);
         let lighting = world.resource::<SceneLighting>().copied().unwrap_or_default();
 
-        frame.view_proj = view_projection.to_cols_array_2d();
+        let view_proj = view_projection.to_cols_array_2d();
+        // Last frame's matrix for motion vectors; the first frame has none, so
+        // it moves nowhere.
+        frame.prev_view_proj = self.previous_view_proj.unwrap_or(view_proj);
+        self.previous_view_proj = Some(view_proj);
+        frame.view_proj = view_proj;
+        frame.camera_position = camera.eye.to_array();
         frame.clear_color = world.resource::<ClearColor>().copied().unwrap_or_default().0;
         frame.light = lighting.key;
         frame.ambient = lighting.ambient;
@@ -785,6 +793,32 @@ mod tests {
         assert_eq!(frame.clear_color, Color::rgb(0.2, 0.3, 0.4));
         assert_eq!(frame.light, lighting.key);
         assert_eq!(frame.ambient, lighting.ambient);
+    }
+
+    #[test]
+    fn the_camera_and_last_frames_matrix_reach_the_renderer() {
+        let mut world = test_world();
+        let mut extractor = RenderExtractor::new();
+        let mut frame = RenderFrame::default();
+
+        extractor.extract(&world, ASPECT, &mut frame);
+        assert_eq!(frame.camera_position, [0.0, 0.0, 5.0]);
+        assert_eq!(
+            frame.prev_view_proj, frame.view_proj,
+            "a first frame has no motion to report"
+        );
+        let first = frame.view_proj;
+
+        world.insert_resource(
+            Camera::new(60f32.to_radians(), 0.1, 100.0).looking_from(Vec3::new(2.0, 1.0, 5.0), Vec3::ZERO),
+        );
+        extractor.extract(&world, ASPECT, &mut frame);
+        assert_eq!(frame.camera_position, [2.0, 1.0, 5.0]);
+        assert_eq!(
+            frame.prev_view_proj, first,
+            "the previous frame's matrix carries over"
+        );
+        assert_ne!(frame.view_proj, first);
     }
 
     #[test]
