@@ -168,26 +168,6 @@ pub(crate) fn depth_size(width: u32, height: u32) -> Option<(u32, u32)> {
     (width > 0 && height > 0).then_some((width, height))
 }
 
-/// Creates the depth buffer view for a surface of this size.
-pub(crate) fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> Option<wgpu::TextureView> {
-    let (width, height) = depth_size(width, height)?;
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("depth-buffer"),
-        size: wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: DEPTH_FORMAT,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        view_formats: &[],
-    });
-    Some(texture.create_view(&wgpu::TextureViewDescriptor::default()))
-}
-
 /// Creates the per-frame uniform buffer and the bind group that points at it.
 pub(crate) fn create_globals_resources(
     device: &wgpu::Device,

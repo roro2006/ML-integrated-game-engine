@@ -25,12 +25,19 @@
 pub(crate) mod resources;
 
 use std::collections::HashSet;
-use std::fmt::{self, Write as _};
+use std::fmt;
 
 /// A resource declared in one graph. Only meaningful for the graph that
 /// returned it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) struct ResourceId(usize);
+
+impl ResourceId {
+    /// Position among the graph's resources, for per-resource tables.
+    pub(crate) fn index(self) -> usize {
+        self.0
+    }
+}
 
 /// What a transient texture must be. Identical descriptors are interchangeable,
 /// which is what lets the pool reuse a texture between frames.
@@ -62,7 +69,9 @@ pub(crate) struct Lifetime {
     pub(crate) last: usize,
 }
 
-type Execute<'a, C> = Box<dyn FnOnce(&mut C) + 'a>;
+/// A pass's recording step. An error names what went wrong; the graph adds
+/// which pass it was.
+type Execute<'a, C> = Box<dyn FnOnce(&mut C) -> Result<(), String> + 'a>;
 
 struct Pass<'a, C> {
     name: &'static str,
@@ -93,6 +102,8 @@ pub(crate) enum GraphError {
     /// Two passes share a name, which would make the dump and per-pass timings
     /// ambiguous.
     DuplicatePass(&'static str),
+    /// A pass failed while recording.
+    Pass { pass: &'static str, message: String },
 }
 
 impl fmt::Display for GraphError {
@@ -105,6 +116,7 @@ impl fmt::Display for GraphError {
                 write!(f, "pass `{pass}` uses a resource from another graph")
             }
             Self::DuplicatePass(name) => write!(f, "two passes are named `{name}`"),
+            Self::Pass { pass, message } => write!(f, "pass `{pass}` failed: {message}"),
         }
     }
 }
@@ -151,7 +163,7 @@ impl<'a, C> RenderGraph<'a, C> {
         name: &'static str,
         reads: &[ResourceId],
         writes: &[ResourceId],
-        execute: impl FnOnce(&mut C) + 'a,
+        execute: impl FnOnce(&mut C) -> Result<(), String> + 'a,
     ) {
         self.passes.push(Pass {
             name,
@@ -219,30 +231,37 @@ pub(crate) struct CompiledGraph<'a, C> {
 
 impl<C> CompiledGraph<'_, C> {
     /// When `id` is in use, or `None` if no pass touches it.
+    #[cfg(test)]
     pub(crate) fn lifetime(&self, id: ResourceId) -> Option<Lifetime> {
         self.lifetimes.get(id.0).copied().flatten()
     }
 
-    /// Transient resources that some pass uses, with their descriptors. A
-    /// transient no pass touches is never allocated.
-    pub(crate) fn transients(&self) -> impl Iterator<Item = (ResourceId, TextureDesc)> + '_ {
+    /// Transient resources that some pass uses, with their names and
+    /// descriptors. A transient no pass touches is never allocated.
+    pub(crate) fn transients(&self) -> impl Iterator<Item = (ResourceId, &'static str, TextureDesc)> + '_ {
         self.resources
             .iter()
             .enumerate()
             .filter_map(|(index, resource)| match resource.origin {
-                Origin::Transient(desc) if self.lifetimes[index].is_some() => Some((ResourceId(index), desc)),
+                Origin::Transient(desc) if self.lifetimes[index].is_some() => {
+                    Some((ResourceId(index), resource.name, desc))
+                }
                 _ => None,
             })
     }
 
     /// Pass names in execution order.
+    #[cfg(test)]
     pub(crate) fn pass_names(&self) -> impl Iterator<Item = &'static str> + '_ {
         self.passes.iter().map(|pass| pass.name)
     }
 
     /// A stable text description of the graph: passes in order with what they
     /// read and write, then each resource with its lifetime.
+    #[cfg(test)]
     pub(crate) fn dump(&self) -> String {
+        use std::fmt::Write as _;
+
         let name = |id: &ResourceId| self.resources[id.0].name;
         let list = |ids: &[ResourceId]| ids.iter().map(name).collect::<Vec<_>>().join(", ");
         let mut out = String::from("passes:\n");
@@ -272,11 +291,21 @@ impl<C> CompiledGraph<'_, C> {
         out
     }
 
-    /// Runs every pass in order.
-    pub(crate) fn execute(self, context: &mut C) {
+    /// The number of resources declared, imported and transient; every
+    /// [`ResourceId`] of this graph indexes below it.
+    pub(crate) fn resource_count(&self) -> usize {
+        self.resources.len()
+    }
+
+    /// Runs every pass in order, stopping at the first that fails.
+    pub(crate) fn execute(self, context: &mut C) -> Result<(), GraphError> {
         for pass in self.passes {
-            (pass.execute)(context);
+            (pass.execute)(context).map_err(|message| GraphError::Pass {
+                pass: pass.name,
+                message,
+            })?;
         }
+        Ok(())
     }
 }
 
@@ -293,8 +322,11 @@ mod tests {
 
     type Log = Vec<&'static str>;
 
-    fn logging(name: &'static str) -> impl FnOnce(&mut Log) {
-        move |log: &mut Log| log.push(name)
+    fn logging(name: &'static str) -> impl FnOnce(&mut Log) -> Result<(), String> {
+        move |log: &mut Log| {
+            log.push(name);
+            Ok(())
+        }
     }
 
     /// lit -> tonemap -> debug lines, the shape of the frame after E1.
@@ -330,8 +362,27 @@ mod tests {
         );
 
         let mut log = Log::new();
-        compiled.execute(&mut log);
+        compiled.execute(&mut log).expect("no pass fails");
         assert_eq!(log, ["lit", "tonemap", "debug-lines"]);
+    }
+
+    #[test]
+    fn a_failing_pass_stops_the_frame_and_is_named() {
+        let mut graph: RenderGraph<'_, Log> = RenderGraph::default();
+        let surface = graph.import("surface");
+        graph.add_pass("lit", &[], &[surface], |_| Err("no view".to_owned()));
+        graph.add_pass("after", &[surface], &[surface], logging("after"));
+
+        let mut log = Log::new();
+        let result = graph.compile().expect("valid order").execute(&mut log);
+        assert_eq!(
+            result,
+            Err(GraphError::Pass {
+                pass: "lit",
+                message: "no view".to_owned(),
+            })
+        );
+        assert!(log.is_empty(), "nothing runs after a failed pass");
     }
 
     #[test]
@@ -412,7 +463,7 @@ mod tests {
         let compiled = graph.compile().expect("a valid frame");
 
         assert_eq!(compiled.lifetime(bloom), None);
-        let transients: Vec<_> = compiled.transients().map(|(id, _)| id).collect();
+        let transients: Vec<_> = compiled.transients().map(|(id, _, _)| id).collect();
         assert_eq!(
             transients,
             [hdr, depth],

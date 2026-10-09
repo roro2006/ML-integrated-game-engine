@@ -27,18 +27,12 @@ mod debug_lines;
 mod frame;
 #[cfg(test)]
 mod golden;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Renderer::render moves onto the graph in the next change"
-    )
-)]
 mod graph;
 mod image;
 mod material;
 mod mesh;
 mod mesh_data;
+mod passes;
 mod pipeline;
 mod registry;
 mod shaders;
@@ -59,6 +53,7 @@ use std::fmt;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use graph::resources::TexturePool;
 use material::GpuMaterial;
 use mesh::GpuMesh;
 use registry::Registry;
@@ -175,6 +170,9 @@ pub enum RenderError {
         shader: String,
         message: String,
     },
+    /// The frame's render graph was declared out of order or a pass failed to
+    /// record. Always a renderer bug, never bad content.
+    Graph(String),
     /// A frame could not be read back: the renderer draws to a window, the
     /// frame was skipped, or mapping the copy failed.
     Readback(String),
@@ -193,6 +191,7 @@ impl fmt::Display for RenderError {
             Self::ShaderCompile { shader, message } => {
                 write!(f, "cannot build a pipeline for {shader}: {message}")
             }
+            Self::Graph(message) => write!(f, "render graph error: {message}"),
             Self::Readback(message) => write!(f, "cannot read the frame back: {message}"),
         }
     }
@@ -281,9 +280,9 @@ pub struct Renderer {
     /// overlay. The renderer does not log: that is the engine layer's job.
     shader_error: Option<String>,
 
-    /// `None` only while the surface is zero-sized.
-    depth_view: Option<wgpu::TextureView>,
-    depth_size: (u32, u32),
+    /// Textures the render graph allocates per frame, the depth buffer among
+    /// them.
+    transients: TexturePool<wgpu::Texture>,
 
     meshes: Registry<MeshHandle, GpuMesh>,
     materials: Registry<MaterialHandle, GpuMaterial>,
@@ -477,8 +476,7 @@ impl Renderer {
             draw_layout,
             pipeline,
             shader_error: None,
-            depth_view: None,
-            depth_size: (0, 0),
+            transients: TexturePool::default(),
             meshes: Registry::default(),
             materials: Registry::default(),
             globals_buffer,
@@ -496,7 +494,6 @@ impl Renderer {
             debug_staging: Vec::new(),
         };
         renderer.configure_output();
-        renderer.ensure_depth_view();
         Ok(renderer)
     }
 
@@ -541,27 +538,10 @@ impl Renderer {
         }
         self.size = (width, height);
         self.configure_output();
-        // The depth buffer must match the colour attachment exactly, so it is
-        // rebuilt here rather than on the next frame. A zero-sized surface
-        // leaves it absent instead of attempting a zero-extent texture.
-        self.ensure_depth_view();
-    }
-
-    /// Rebuilds the depth buffer if it no longer matches the output.
-    fn ensure_depth_view(&mut self) {
-        if self.depth_size == self.size && self.depth_view.is_some() {
-            return;
-        }
-        // Larger than the device allows is treated like zero: no depth buffer,
-        // so frames are skipped rather than failing validation.
-        let max = self.device.limits().max_texture_dimension_2d;
-        let (width, height) = self.size;
-        self.depth_view = if width <= max && height <= max {
-            pipeline::create_depth_view(&self.device, width, height)
-        } else {
-            None
-        };
-        self.depth_size = self.size;
+        // Every transient is sized to the output, so none survives a resize.
+        // The pool would retire them after a frame anyway; clearing returns
+        // the memory now, which matters while a window is being dragged.
+        self.transients.clear();
     }
 
     pub fn surface_size(&self) -> (u32, u32) {
@@ -800,7 +780,6 @@ impl Renderer {
         }
         let started = Instant::now();
         self.reload_shaders_if_changed();
-        self.ensure_depth_view();
 
         let plan = registry::plan_draws(&frame.draws, &self.meshes, &self.materials);
         self.skipped_draws = plan.skipped;
@@ -837,13 +816,6 @@ impl Renderer {
             Acquired::Skipped(reason) => return Ok(FrameOutcome::Skipped(reason)),
         };
 
-        // The pipeline declares a depth attachment, so a frame without one
-        // cannot be recorded. Only a zero-sized surface produces that, and it
-        // returned above; skipping keeps the invariant without a panic.
-        let Some(depth_view) = self.depth_view.as_ref() else {
-            return Ok(FrameOutcome::Skipped(SkipReason::ZeroSizedSurface));
-        };
-
         self.queue.write_buffer(
             &self.globals_buffer,
             0,
@@ -857,76 +829,12 @@ impl Renderer {
                 .write_buffer(&self.debug_vertex_buffer, 0, &self.debug_staging);
         }
 
-        let view = target.view();
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("frame-encoder"),
-            });
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("lit-pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: frame.clear_color.r,
-                            g: frame.clear_color.g,
-                            b: frame.clear_color.b,
-                            a: frame.clear_color.a,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        // 1.0 is the far plane for the `0..1` depth range
-                        // (ADR-0008), and `Less` keeps the nearest fragment.
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-
-            if !plan.draws.is_empty() {
-                pass.set_pipeline(&self.pipeline);
-                pass.set_bind_group(0, &self.globals_bind_group, &[]);
-                for planned in &plan.draws {
-                    let Some(mesh) = self.meshes.get_by_index(planned.mesh) else {
-                        continue;
-                    };
-                    let Ok(offset) = u32::try_from(planned.slot * stride) else {
-                        continue;
-                    };
-                    pass.set_bind_group(1, &self.draw_bind_group, &[offset]);
-                    pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-                    pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                    pass.draw_indexed(0..mesh.index_count, 0, 0..1);
-                }
-            }
-
-            // Debug lines last, inside the same pass and against the same depth
-            // buffer. The pipeline tests depth, so the scene occludes the lines,
-            // and does not write it, so the lines never occlude the scene. One
-            // draw call covers every line in the frame.
-            if let Some(count) = debug_vertices {
-                pass.set_pipeline(&self.debug_pipeline);
-                // Re-bound even though the lit pass bound the same buffer:
-                // switching to a pipeline with a different layout invalidates
-                // the bind groups already set.
-                pass.set_bind_group(0, &self.globals_bind_group, &[]);
-                pass.set_vertex_buffer(0, self.debug_vertex_buffer.slice(..));
-                pass.draw(0..count, 0..1);
-            }
-        }
-        self.queue.submit(std::iter::once(encoder.finish()));
+        // The pool is moved out while the graph borrows `self` for its passes,
+        // and put back whatever happens.
+        let mut transients = std::mem::take(&mut self.transients);
+        let commands = self.record_frame(&mut transients, target.view(), frame, &plan, debug_vertices);
+        self.transients = transients;
+        self.queue.submit(std::iter::once(commands?));
         self.finish(target, suboptimal);
 
         Ok(FrameOutcome::Presented(FrameStats {

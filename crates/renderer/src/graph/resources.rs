@@ -6,9 +6,11 @@
 //! memory aliasing by lifetime is not done in v1, though the graph records
 //! the lifetimes it would need.
 //!
-//! A texture no frame asked for is dropped at the start of the next frame.
-//! That is what makes a resize safe without a separate invalidation step: the
-//! new size is a new descriptor, nothing asks for the old one, and it goes.
+//! A texture no frame has asked for in [`RETIRE_AFTER_FRAMES`] frames is
+//! dropped. Waiting a few frames rather than one keeps a target that a setting
+//! toggles on and off from being destroyed and recreated on every toggle, and
+//! still retires the old size after a resize without a separate invalidation
+//! step: the new size is a new descriptor, so nothing asks for the old one.
 //! `clear` exists for when the renderer wants the memory back at once.
 //!
 //! The pool is generic over the texture type so that reuse is tested without
@@ -16,11 +18,16 @@
 
 use super::TextureDesc;
 
+/// Frames a texture may go unasked for before the pool drops it.
+pub(crate) const RETIRE_AFTER_FRAMES: u32 = 4;
+
 #[derive(Debug)]
 struct Entry<T> {
     desc: TextureDesc,
     texture: T,
     in_use: bool,
+    /// Consecutive frames, before this one, in which nothing asked for it.
+    unused_frames: u32,
 }
 
 /// Index of a texture handed out this frame. Valid until the next
@@ -45,13 +52,15 @@ impl<T> Default for TexturePool<T> {
 }
 
 impl<T> TexturePool<T> {
-    /// Drops what the last frame did not use, then frees everything for this
-    /// frame.
+    /// Drops what has gone unused for [`RETIRE_AFTER_FRAMES`] frames, then
+    /// frees everything for this frame.
     pub(crate) fn begin_frame(&mut self) {
-        self.entries.retain(|entry| entry.in_use);
         for entry in &mut self.entries {
+            entry.unused_frames = if entry.in_use { 0 } else { entry.unused_frames + 1 };
             entry.in_use = false;
         }
+        self.entries
+            .retain(|entry| entry.unused_frames < RETIRE_AFTER_FRAMES);
     }
 
     /// A free texture matching `desc`, created with `create` if none is free.
@@ -70,6 +79,7 @@ impl<T> TexturePool<T> {
             desc,
             texture: create(&desc),
             in_use: true,
+            unused_frames: 0,
         });
         self.created += 1;
         PoolSlot(self.entries.len() - 1)
@@ -84,13 +94,34 @@ impl<T> TexturePool<T> {
         self.entries.clear();
     }
 
+    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.entries.len()
     }
 
+    #[cfg(test)]
     pub(crate) fn created(&self) -> u64 {
         self.created
     }
+}
+
+/// Creates the GPU texture for a transient, labelled with its graph name so
+/// captures and validation messages say which target it is.
+pub(crate) fn create_texture(device: &wgpu::Device, label: &str, desc: &TextureDesc) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width: desc.width,
+            height: desc.height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: desc.format,
+        usage: desc.usage,
+        view_formats: &[],
+    })
 }
 
 #[cfg(test)]
@@ -157,24 +188,35 @@ mod tests {
     }
 
     #[test]
-    fn a_resize_drops_the_old_size_after_one_frame() {
+    fn an_old_size_is_retired_after_going_unused_for_a_few_frames() {
         let mut pool = TexturePool::default();
         pool.begin_frame();
         pool.acquire(desc(1280, 720), make);
 
+        // Frames 1..=RETIRE_AFTER_FRAMES ask only for the new size.
+        for frame in 1..=RETIRE_AFTER_FRAMES {
+            pool.begin_frame();
+            pool.acquire(desc(1920, 1080), make);
+            assert_eq!(pool.len(), 2, "the old size is kept on frame {frame}");
+        }
         pool.begin_frame();
+        assert_eq!(pool.len(), 1, "then it is gone");
         pool.acquire(desc(1920, 1080), make);
-        assert_eq!(pool.created(), 2, "the new size is a new texture");
-        assert_eq!(
-            pool.len(),
-            2,
-            "the old one survives until nothing used it for a frame"
-        );
+        assert_eq!(pool.created(), 2, "and the new size was only ever created once");
+    }
 
+    #[test]
+    fn a_target_toggled_off_briefly_is_not_recreated() {
+        let mut pool = TexturePool::default();
         pool.begin_frame();
-        assert_eq!(pool.len(), 1, "the old size is gone");
-        pool.acquire(desc(1920, 1080), make);
-        assert_eq!(pool.created(), 2, "and the new one is reused");
+        pool.acquire(desc(64, 64), make);
+        // Off for fewer frames than the retirement threshold, then back on.
+        for _ in 1..RETIRE_AFTER_FRAMES {
+            pool.begin_frame();
+        }
+        pool.begin_frame();
+        pool.acquire(desc(64, 64), make);
+        assert_eq!(pool.created(), 1);
     }
 
     #[test]
