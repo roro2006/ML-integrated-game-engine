@@ -27,6 +27,14 @@ mod debug_lines;
 mod frame;
 #[cfg(test)]
 mod golden;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Renderer::render moves onto the graph in the next change"
+    )
+)]
+mod graph;
 mod image;
 mod material;
 mod mesh;
