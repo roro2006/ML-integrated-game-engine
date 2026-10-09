@@ -100,12 +100,12 @@ impl Renderer {
         graph.add_pass("lit", &[], &[hdr, depth], move |context| {
             self.lit_pass(context, hdr, depth, depth_is_read_later, frame, plan)
         });
-        if let Some(auto) = frame.post.auto_exposure {
+        if frame.post.auto_exposure.is_some() {
             graph.add_pass("exposure-histogram", &[hdr], &[], move |context| {
-                self.exposure_pass(context, hdr, auto, ExposureStep::Histogram)
+                self.exposure_pass(context, hdr, ExposureStep::Histogram)
             });
             graph.add_pass("exposure-average", &[hdr], &[], move |context| {
-                self.exposure_pass(context, hdr, auto, ExposureStep::Average)
+                self.exposure_pass(context, hdr, ExposureStep::Average)
             });
         }
         let bloom = self.declare_bloom(&mut graph, hdr, &frame.post.bloom);
@@ -438,7 +438,6 @@ impl Renderer {
         &self,
         context: &mut PassContext,
         hdr: ResourceId,
-        _settings: crate::AutoExposure,
         step: ExposureStep,
     ) -> Result<(), String> {
         let resources = &self.exposure;

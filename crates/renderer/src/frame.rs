@@ -256,7 +256,9 @@ pub struct PostSettings {
     /// Colour grading applied to the display image. Neutral by default.
     pub grade: Grade,
     /// Automatic exposure, or `None` for the fixed `exposure_ev` alone. With
-    /// it on, `exposure_ev` becomes compensation on top of the adapted value.
+    /// it on, `exposure_ev` becomes compensation on top of the adapted value,
+    /// so set it to 0 to land the scene's average exactly on mid grey: the
+    /// default of [`DEFAULT_EXPOSURE_EV`] was tuned for fixed exposure.
     pub auto_exposure: Option<AutoExposure>,
     /// Light bleeding around bright sources. Off by default.
     pub bloom: Bloom,

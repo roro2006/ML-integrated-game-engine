@@ -66,15 +66,36 @@ fn tap(uv: vec2<f32>) -> vec3<f32> {
     return colour;
 }
 
+// On the first level each tap is weighted by 1 / (1 + luminance), Karis's
+// average, so one extremely bright pixel (a sharp specular peak) counts as a
+// bright pixel rather than as thousands of them, and does not flare into a
+// halo that pops as it moves. Later levels average plainly.
+fn weight(colour: vec3<f32>) -> f32 {
+    if PREFILTER {
+        return 1.0 / (1.0 + dot(colour, vec3<f32>(0.2126, 0.7152, 0.0722)));
+    }
+    return 1.0;
+}
+
 @fragment
 fn downsample(input: VertexOutput) -> @location(0) vec4<f32> {
     let texel = 1.0 / vec2<f32>(textureDimensions(source));
-    let centre = tap(input.uv);
-    let corners = tap(input.uv + texel * vec2<f32>(-1.0, -1.0))
-        + tap(input.uv + texel * vec2<f32>(1.0, -1.0))
-        + tap(input.uv + texel * vec2<f32>(-1.0, 1.0))
-        + tap(input.uv + texel * vec2<f32>(1.0, 1.0));
-    return vec4<f32>((centre * 4.0 + corners) / 8.0, 1.0);
+    let taps = array<vec3<f32>, 5>(
+        tap(input.uv),
+        tap(input.uv + texel * vec2<f32>(-1.0, -1.0)),
+        tap(input.uv + texel * vec2<f32>(1.0, -1.0)),
+        tap(input.uv + texel * vec2<f32>(-1.0, 1.0)),
+        tap(input.uv + texel * vec2<f32>(1.0, 1.0)),
+    );
+    let shares = array<f32, 5>(4.0, 1.0, 1.0, 1.0, 1.0);
+    var sum = vec3<f32>(0.0);
+    var total = 0.0;
+    for (var index = 0; index < 5; index++) {
+        let w = shares[index] * weight(taps[index]);
+        sum += taps[index] * w;
+        total += w;
+    }
+    return vec4<f32>(sum / total, 1.0);
 }
 
 @fragment

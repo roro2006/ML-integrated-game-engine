@@ -124,9 +124,16 @@ pub(crate) mod mirror {
             Tonemapper::Agx => agx(exposed),
         };
         let grade = settings.grade;
-        let graded =
-            [0, 1, 2].map(|i| super::grade_channel(display[i], grade.lift[i], grade.gamma[i], grade.gain[i]));
-        graded.map(|v| (linear_to_srgb(v) * 255.0).round().clamp(0.0, 255.0) as u8)
+        // Graded in the encoded space, as the shader does.
+        let graded = [0, 1, 2].map(|i| {
+            super::grade_channel(
+                linear_to_srgb(display[i]),
+                grade.lift[i],
+                grade.gamma[i],
+                grade.gain[i],
+            )
+        });
+        graded.map(|v| (v * 255.0).round().clamp(0.0, 255.0) as u8)
     }
 }
 
@@ -152,7 +159,12 @@ pub(crate) fn post_bytes(settings: &PostSettings) -> [u8; POST_UNIFORM_SIZE] {
     out[12..16].copy_from_slice(&u32::from(settings.auto_exposure.is_some()).to_le_bytes());
     let grade = settings.grade;
     let inverse_gamma = grade.gamma.map(|gamma| 1.0 / sanitised_gamma(gamma));
-    for (offset, values) in [(16, grade.lift), (32, inverse_gamma), (48, grade.gain)] {
+    // A broken lift or gain falls back to neutral rather than reaching the
+    // shader, where a NaN would turn pixels black or white.
+    let neutral = |values: [f32; 3], fallback: f32| values.map(|v| if v.is_finite() { v } else { fallback });
+    let lift = neutral(grade.lift, 0.0);
+    let gain = neutral(grade.gain, 1.0);
+    for (offset, values) in [(16, lift), (32, inverse_gamma), (48, gain)] {
         for (index, value) in values.iter().enumerate() {
             let at = offset + index * 4;
             out[at..at + 4].copy_from_slice(&value.to_le_bytes());
@@ -171,10 +183,10 @@ fn sanitised_gamma(gamma: f32) -> f32 {
     }
 }
 
-/// Mirror of `grade` in `colour.wgsl`, on one display channel.
+/// Mirror of `grade` in `colour.wgsl`, on one sRGB-encoded display channel.
 #[cfg(test)]
-pub(crate) fn grade_channel(display: f32, lift: f32, gamma: f32, gain: f32) -> f32 {
-    let lifted = gain * (display + lift * (1.0 - display));
+pub(crate) fn grade_channel(encoded: f32, lift: f32, gamma: f32, gain: f32) -> f32 {
+    let lifted = gain * (encoded + lift * (1.0 - encoded));
     lifted.max(0.0).powf(1.0 / sanitised_gamma(gamma)).clamp(0.0, 1.0)
 }
 

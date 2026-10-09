@@ -61,8 +61,13 @@ fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
 @fragment
 fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     // Bloom is scene light, so it joins before exposure and the curve.
-    let uv = position.xy / vec2<f32>(textureDimensions(hdr));
-    let bloom = textureSample(bloom_texture, bloom_sampler, uv).rgb * post.bloom_intensity;
+    // Bloom is sampled only when it is on; the switch is uniform, so the
+    // sample stays in uniform control flow.
+    var bloom = vec3<f32>(0.0);
+    if post.bloom_intensity > 0.0 {
+        let uv = position.xy / vec2<f32>(textureDimensions(hdr));
+        bloom = textureSample(bloom_texture, bloom_sampler, uv).rgb * post.bloom_intensity;
+    }
     let stored = finite_scene(textureLoad(hdr, vec2<i32>(position.xy), 0).rgb + bloom);
     var scale = post.exposure;
     if post.auto_exposure == 1u && exposure.initialised != 0u {
@@ -75,9 +80,12 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     } else {
         display = aces_fitted(scene);
     }
-    display = grade(display, post.lift.rgb, post.inverse_gamma.rgb, post.gain.rgb);
+    // Graded in the encoded space; decoded again when the swapchain encodes.
+    let graded = grade(linear_to_srgb(display), post.lift.rgb, post.inverse_gamma.rgb, post.gain.rgb);
     if encode_srgb {
-        display = linear_to_srgb(display);
+        display = graded;
+    } else {
+        display = srgb_to_linear(graded);
     }
     return vec4<f32>(display, 1.0);
 }
