@@ -115,9 +115,18 @@ const IDENTITY: Mat4 = [
 pub(crate) fn inverse(m: &Mat4) -> Option<Mat4> {
     // a[row][column], from the column-major input.
     let a: [[f64; 4]; 4] = std::array::from_fn(|row| std::array::from_fn(|column| f64::from(m[column][row])));
+    // The three indices other than `skip`, without allocating: this runs every
+    // frame.
+    let others = |skip: usize| -> [usize; 3] {
+        let mut out = [0; 3];
+        for (slot, index) in (0..4).filter(|&index| index != skip).enumerate() {
+            out[slot] = index;
+        }
+        out
+    };
     let minor = |skip_row: usize, skip_column: usize| -> f64 {
-        let rows: Vec<usize> = (0..4).filter(|&row| row != skip_row).collect();
-        let columns: Vec<usize> = (0..4).filter(|&column| column != skip_column).collect();
+        let rows = others(skip_row);
+        let columns = others(skip_column);
         let e = |r: usize, c: usize| a[rows[r]][columns[c]];
         e(0, 0) * (e(1, 1) * e(2, 2) - e(1, 2) * e(2, 1)) - e(0, 1) * (e(1, 0) * e(2, 2) - e(1, 2) * e(2, 0))
             + e(0, 2) * (e(1, 0) * e(2, 1) - e(1, 1) * e(2, 0))

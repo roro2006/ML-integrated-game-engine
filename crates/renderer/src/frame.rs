@@ -100,7 +100,10 @@ pub enum AlphaMode {
 ///
 /// The slot, not the texture, decides how texels are read: base colour and
 /// emissive are sampled as sRGB, normal and ORM as linear, whatever colour
-/// space the texture was uploaded with.
+/// space the texture was uploaded with. Generated mips, though, are averaged
+/// in the colour space given at upload, so upload base colour and emissive
+/// textures as [`ColorSpace::Srgb`](crate::ColorSpace) and normal and ORM
+/// textures as `Linear`, or their distant mips come out too dark or too light.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct MaterialTextures {
     pub base_color: Option<TextureHandle>,

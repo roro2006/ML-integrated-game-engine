@@ -586,16 +586,18 @@ mod pbr {
     #[ignore = "requires a GPU adapter and driver"]
     fn a_normal_map_tilts_the_shading_and_is_always_read_linear() {
         let mut renderer = headless();
-        // Encoded tilt: x = 191/255 * 2 - 1, z = 218/255 * 2 - 1.
-        let texel = [191u8, 128, 218, 255];
+        // Encoded tilt mostly up the image: green well away from 128, so a
+        // bitangent pointing the wrong way cannot pass.
+        let texel = [140u8, 200, 210, 255];
         let decoded = [
-            191.0 / 255.0 * 2.0 - 1.0,
-            128.0 / 255.0 * 2.0 - 1.0,
-            218.0 / 255.0 * 2.0 - 1.0,
+            140.0 / 255.0 * 2.0 - 1.0,
+            200.0 / 255.0 * 2.0 - 1.0,
+            210.0 / 255.0 * 2.0 - 1.0,
         ];
-        // The quad's tangent is +X and, with top-down UVs, its bitangent -Y.
-        let normal = normalize([decoded[0], -decoded[1], decoded[2]]);
-        let to_light = normalize([0.6, 0.0, 0.8]);
+        // The quad's tangent is +X and its bitangent, up the image, +Y.
+        let normal = normalize(decoded);
+        // Light from above, so tilting up brightens and tilting down darkens.
+        let to_light = normalize([0.2, 0.6, 0.8]);
         let linear = mirror::shade(
             normal,
             to_view_at_centre_pixel(),

@@ -2,10 +2,17 @@
 //!
 //! The interim stand-in for MikkTSpace, which the asset cooker (B6) will run
 //! offline. Per triangle, the tangent and bitangent are solved from the edge
-//! vectors and the UV deltas (Lengyel's method) and summed per vertex, which
-//! weights each triangle by its area. Each vertex's tangent is then made
-//! perpendicular to its normal, and `w` records the handedness, the sign the
-//! shader multiplies `cross(normal, tangent)` by to get the bitangent.
+//! vectors and the UV deltas (Lengyel's method) and summed per vertex, so a
+//! triangle counts in proportion to its size in UV space rather than by the
+//! angle it makes at the vertex, which MikkTSpace will improve on. Each
+//! vertex's tangent is then made perpendicular to its normal, and `w` records
+//! the handedness, the sign the shader multiplies `cross(normal, tangent)` by
+//! to get the bitangent.
+//!
+//! The bitangent is the direction *up the image*. UVs are top-down (v grows
+//! downwards, as in glTF and wgpu), while normal maps are +Y up (the OpenGL
+//! convention glTF uses), so up the image is decreasing v: the bitangent is
+//! `-dP/dv`. Taking `+dP/dv` would turn every vertical bump into a dent.
 //!
 //! A vertex whose triangles have no usable UV mapping (all UVs equal, which
 //! is every engine primitive without a texture) gets an arbitrary tangent
@@ -83,7 +90,8 @@ pub(crate) fn generate(
         }
         let inverse = 1.0 / area;
         let tangent = scale(sub(scale(edge1, dv2), scale(edge2, dv1)), inverse);
-        let bitangent = scale(sub(scale(edge2, du1), scale(edge1, du2)), inverse);
+        // -dP/dv: up the image, where a +Y-up normal map's green points.
+        let bitangent = scale(sub(scale(edge1, du2), scale(edge2, du1)), inverse);
         for index in [i0, i1, i2] {
             tangents[index] = add(tangents[index], tangent);
             bitangents[index] = add(bitangents[index], bitangent);
@@ -124,7 +132,8 @@ mod tests {
         a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-5)
     }
 
-    /// A quad facing +Z, with u running along +X and v along -Y (top-down UVs).
+    /// A quad facing +Z, with u running along +X and v along -Y (top-down UVs),
+    /// as an image is laid on a wall: up the image is world +Y.
     fn quad(uvs: Vec<[f32; 2]>) -> Vec<[f32; 4]> {
         generate(
             &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
@@ -135,19 +144,22 @@ mod tests {
     }
 
     #[test]
-    fn the_tangent_follows_increasing_u() {
+    fn the_tangent_follows_increasing_u_and_the_bitangent_points_up_the_image() {
         let tangents = quad(vec![[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]]);
         for tangent in tangents {
-            assert!(close(tangent, [1.0, 0.0, 0.0, -1.0]), "{tangent:?}");
+            // w = +1: cross(+Z, +X) = +Y, the top of the image, as glTF's
+            // own tangents for this quad would say.
+            assert!(close(tangent, [1.0, 0.0, 0.0, 1.0]), "{tangent:?}");
         }
     }
 
     #[test]
     fn mirrored_uvs_flip_the_handedness_not_the_normal() {
-        // Same quad with u mirrored: the tangent turns round and so does w.
+        // Same quad with u mirrored: the tangent turns round and so does w,
+        // so the bitangent still points up the image.
         let tangents = quad(vec![[1.0, 1.0], [0.0, 1.0], [0.0, 0.0], [1.0, 0.0]]);
         for tangent in tangents {
-            assert!(close(tangent, [-1.0, 0.0, 0.0, 1.0]), "{tangent:?}");
+            assert!(close(tangent, [-1.0, 0.0, 0.0, -1.0]), "{tangent:?}");
         }
     }
 

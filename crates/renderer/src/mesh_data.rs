@@ -305,11 +305,12 @@ mod tests {
     fn interleaves_sixteen_floats_per_vertex() {
         let data = triangle().interleaved();
         assert_eq!(data.len(), 3 * VERTEX_FLOATS);
-        // u runs along +X and v along +Y on a +Z face: tangent +X, right-handed.
+        // u runs along +X and v along +Y on a +Z face. With top-down UVs that
+        // puts the top of the image at -Y, a mirrored mapping: tangent +X, w -1.
         assert_eq!(
             &data[0..16],
             &[
-                0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0
+                0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, -1.0, 0.0
             ]
         );
         assert_eq!(

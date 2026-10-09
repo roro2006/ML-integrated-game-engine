@@ -95,46 +95,64 @@ fn vs_main(vertex: VertexInput) -> VertexOutput {
     return output;
 }
 
-fn surface_normal(fragment: VertexOutput) -> vec3<f32> {
-    let geometric = normalize(fragment.world_normal);
+// The shading normal. `facing` is +1 for a front face and -1 for a back face,
+// which only cut-out materials draw, so a leaf seen from behind is lit on the
+// side the viewer sees.
+fn surface_normal(fragment: VertexOutput, encoded_tilt: vec3<f32>, facing: f32) -> vec3<f32> {
+    let geometric = normalize(fragment.world_normal) * facing;
     if !HAS_NORMAL_MAP {
         return geometric;
     }
     // Gram-Schmidt again after interpolation, then the bitangent from the
-    // handedness the mesh carries.
+    // handedness the mesh carries: up the image, where +Y-up maps point.
     let tangent = normalize(fragment.world_tangent.xyz - geometric * dot(geometric, fragment.world_tangent.xyz));
     let bitangent = cross(geometric, tangent) * fragment.world_tangent.w;
-    var tilt = textureSample(normal_texture, material_sampler, fragment.uv).xyz * 2.0 - 1.0;
+    var tilt = encoded_tilt * 2.0 - 1.0;
     tilt = vec3<f32>(tilt.xy * material.emissive.w, tilt.z);
     // Renormalised: mip averaging shortens normals.
     return normalize(tangent * tilt.x + bitangent * tilt.y + geometric * tilt.z);
 }
 
+// The largest value written to the half-float target, kept below its 65504
+// limit: a tight GGX highlight can exceed it, and the infinity it would store
+// spreads through every later filter, bloom first.
+const MAX_SCENE_LIGHT: f32 = 60000.0;
+
 @fragment
-fn fs_main(fragment: VertexOutput) -> @location(0) vec4<f32> {
+fn fs_main(fragment: VertexOutput, @builtin(front_facing) front_facing: bool) -> @location(0) vec4<f32> {
+    // Every texture is sampled before the alpha test, so derivatives, and with
+    // them mip selection, stay defined across the whole quad even on targets
+    // where `discard` ends the invocation rather than demoting it.
     let base = textureSample(base_color_texture, material_sampler, fragment.uv);
+    let orm = textureSample(orm_texture, material_sampler, fragment.uv).rgb;
+    var encoded_tilt = vec3<f32>(0.5, 0.5, 1.0);
+    if HAS_NORMAL_MAP {
+        encoded_tilt = textureSample(normal_texture, material_sampler, fragment.uv).xyz;
+    }
+    var emitted = vec3<f32>(0.0);
+    if HAS_EMISSIVE {
+        emitted = material.emissive.rgb * textureSample(emissive_texture, material_sampler, fragment.uv).rgb;
+    }
+
     let albedo = draw.base_color.rgb * fragment.color * base.rgb;
     let alpha = draw.base_color.w * base.a;
     if ALPHA_MASK && alpha < material.factors.z {
         discard;
     }
 
-    let orm = textureSample(orm_texture, material_sampler, fragment.uv).rgb;
     let occlusion = mix(1.0, orm.r, material.factors.w);
     let roughness = clamp(material.factors.y * orm.g, 0.045, 1.0);
     let metallic = clamp(material.factors.x * orm.b, 0.0, 1.0);
 
-    let normal = surface_normal(fragment);
+    let normal = surface_normal(fragment, encoded_tilt, select(-1.0, 1.0, front_facing));
     let to_view = normalize(globals.camera_position.xyz - fragment.world_position);
     let to_light = normalize(globals.light_direction.xyz);
     let irradiance = globals.light_color.rgb * globals.light_color.w * PI;
     var lit = brdf_direct(normal, to_view, to_light, albedo, metallic, roughness, irradiance);
     lit += ambient_flat(albedo, metallic, globals.ambient_color.rgb * globals.ambient_color.w, occlusion);
-    if HAS_EMISSIVE {
-        lit += material.emissive.rgb * textureSample(emissive_texture, material_sampler, fragment.uv).rgb;
-    }
+    lit += emitted;
 
     // The flash overlay after lighting, exactly as lit.wgsl (ADR-0017).
     let flashed = mix(lit, draw.flash.rgb, clamp(draw.flash.w, 0.0, 1.0));
-    return vec4<f32>(flashed, alpha);
+    return vec4<f32>(min(flashed, vec3<f32>(MAX_SCENE_LIGHT)), alpha);
 }
