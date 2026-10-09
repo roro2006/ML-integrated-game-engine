@@ -788,3 +788,259 @@ mod bloom {
         assert!(bright_halo < 3 * 255, "and the halo is not clipped to white");
     }
 }
+
+/// The M17 showcase: procedural textures on a tiled ground, a row of spheres
+/// stepping through metallic and roughness, auto-exposure and bloom on. Built
+/// from nothing but this crate, so it needs no assets and no decoder.
+mod showcase {
+    use super::*;
+    use crate::{
+        AutoExposure, Bloom, ColorSpace, MaterialTextures, Mips, PostSettings, SamplerDesc, Shading,
+        TextureDesc, TextureHandle, Wrap,
+    };
+
+    const TEXTURE_SIZE: u32 = 256;
+
+    /// A UV sphere of radius 0.5 resting on the ground, smooth normals, u around
+    /// and v top to bottom.
+    fn sphere(segments: u32, rings: u32) -> MeshData {
+        let mut mesh = MeshData::default();
+        for ring in 0..=rings {
+            let v = ring as f32 / rings as f32;
+            let polar = v * std::f32::consts::PI;
+            for segment in 0..=segments {
+                let u = segment as f32 / segments as f32;
+                let azimuth = u * std::f32::consts::TAU;
+                let normal = [
+                    polar.sin() * azimuth.cos(),
+                    polar.cos(),
+                    -polar.sin() * azimuth.sin(),
+                ];
+                mesh.positions
+                    .push([normal[0] * 0.5, normal[1] * 0.5 + 0.5, normal[2] * 0.5]);
+                mesh.normals.push(normal);
+                mesh.uvs.push([u, v]);
+            }
+        }
+        let stride = segments + 1;
+        for ring in 0..rings {
+            for segment in 0..segments {
+                let a = ring * stride + segment;
+                let b = a + stride;
+                mesh.indices.extend_from_slice(&[a, b, a + 1, a + 1, b, b + 1]);
+            }
+        }
+        mesh
+    }
+
+    /// The ground with its UVs repeated `tiles` times.
+    fn tiled_ground(half: f32, tiles: f32) -> MeshData {
+        let mut mesh = ground(half);
+        for uv in &mut mesh.uvs {
+            *uv = [uv[0] * tiles, uv[1] * tiles];
+        }
+        mesh
+    }
+
+    /// RGBA8 texels from a function of (x, y) in 0..1.
+    fn texels(paint: impl Fn(f32, f32) -> [u8; 4]) -> Vec<u8> {
+        let size = TEXTURE_SIZE as f32;
+        (0..TEXTURE_SIZE * TEXTURE_SIZE)
+            .flat_map(|index| {
+                let x = (index % TEXTURE_SIZE) as f32 / size;
+                let y = (index / TEXTURE_SIZE) as f32 / size;
+                paint(x, y)
+            })
+            .collect()
+    }
+
+    fn texture(
+        renderer: &mut Renderer,
+        color_space: ColorSpace,
+        paint: impl Fn(f32, f32) -> [u8; 4],
+    ) -> TextureHandle {
+        renderer
+            .create_texture(
+                &TextureDesc {
+                    width: TEXTURE_SIZE,
+                    height: TEXTURE_SIZE,
+                    color_space,
+                    mips: Mips::Generate,
+                },
+                &texels(paint),
+            )
+            .expect("valid")
+    }
+
+    fn grout(x: f32, y: f32) -> bool {
+        (x * 4.0).fract() < 0.04 || (y * 4.0).fract() < 0.04
+    }
+
+    fn ground_material(renderer: &mut Renderer) -> crate::MaterialHandle {
+        // Stone tiles: two warm greys in a checker, with dark grout.
+        let albedo = texture(renderer, ColorSpace::Srgb, |x, y| {
+            let checker = ((x * 4.0) as u32 + (y * 4.0) as u32).is_multiple_of(2);
+            match (grout(x, y), checker) {
+                (true, _) => [40, 38, 35, 255],
+                (false, true) => [168, 156, 140, 255],
+                (false, false) => [128, 120, 110, 255],
+            }
+        });
+        // Each tile domed, sloping down to the grout: a +Y-up tangent-space map.
+        let normal = texture(renderer, ColorSpace::Linear, |x, y| {
+            let slope = |t: f32| ((t * 4.0).fract() - 0.5) * 0.8;
+            let (nx, ny) = (slope(x), -slope(y));
+            let nz = (1.0 - nx * nx - ny * ny).max(0.0).sqrt();
+            let encode = |c: f32| ((c * 0.5 + 0.5) * 255.0).round() as u8;
+            [encode(nx), encode(ny), encode(nz), 255]
+        });
+        // Occlusion in the grout, roughness rising across the texture.
+        let orm = texture(renderer, ColorSpace::Linear, |x, y| {
+            let occlusion = if grout(x, y) { 90 } else { 255 };
+            [occlusion, (60.0 + x * 195.0) as u8, 0, 255]
+        });
+        renderer.create_material(&MaterialDesc {
+            shading: Shading::Pbr,
+            textures: MaterialTextures {
+                base_color: Some(albedo),
+                normal: Some(normal),
+                orm: Some(orm),
+                emissive: None,
+            },
+            sampler: SamplerDesc {
+                wrap: Wrap::Repeat,
+                anisotropy: 8,
+                ..SamplerDesc::default()
+            },
+            roughness: 1.0,
+            ..MaterialDesc::default()
+        })
+    }
+
+    pub(super) fn build(renderer: &mut Renderer, width: u32, height: u32) -> RenderFrame {
+        let ground_mesh = renderer.upload_mesh(&tiled_ground(8.0, 4.0)).expect("valid");
+        let ground_material = ground_material(renderer);
+
+        let eye = [0.0, 2.2, 6.0];
+        let view = look_at(eye, [0.0, 0.6, 0.0], [0.0, 1.0, 0.0]);
+        let projection = perspective(50f32.to_radians(), width as f32 / height as f32, 0.1, 100.0);
+        let mut frame = RenderFrame::new(mul(&projection, &view), Color::rgb(0.25, 0.35, 0.55));
+        frame.camera_position = eye;
+        frame.light = crate::DirectionalLight {
+            color: [1.0, 0.95, 0.85],
+            intensity: 3.0,
+            ..crate::DirectionalLight::default()
+        }
+        .with_direction([0.5, 0.7, 0.4]);
+        frame.ambient.intensity = 0.4;
+        frame.post = PostSettings {
+            exposure_ev: 0.0,
+            auto_exposure: Some(AutoExposure {
+                brighten_speed: f32::INFINITY,
+                darken_speed: f32::INFINITY,
+                ..AutoExposure::default()
+            }),
+            bloom: Bloom {
+                intensity: 0.05,
+                ..Bloom::default()
+            },
+            ..PostSettings::default()
+        };
+        frame.push(DrawCommand {
+            mesh: ground_mesh,
+            material: ground_material,
+            model: IDENTITY,
+            normal_matrix: IDENTITY,
+        });
+
+        // Two rows of five: dielectric in front, metal behind, smooth to rough.
+        let sphere_mesh = renderer.upload_mesh(&sphere(48, 24)).expect("valid");
+        for (row, metallic) in [(0, 0.0), (1, 1.0)] {
+            for column in 0..5 {
+                let roughness = 0.1 + column as f32 * 0.225;
+                let base_color = if metallic > 0.5 {
+                    [0.95, 0.75, 0.35, 1.0]
+                } else {
+                    [0.7, 0.15, 0.12, 1.0]
+                };
+                let material = renderer.create_material(&MaterialDesc {
+                    base_color,
+                    shading: Shading::Pbr,
+                    metallic,
+                    roughness,
+                    ..MaterialDesc::default()
+                });
+                let (model, normal_matrix) =
+                    turned_at(0.0, [column as f32 * 1.3 - 2.6, 0.0, -(row as f32) * 1.4]);
+                frame.push(DrawCommand {
+                    mesh: sphere_mesh,
+                    material,
+                    model,
+                    normal_matrix,
+                });
+            }
+        }
+        frame
+    }
+
+    #[test]
+    fn the_sphere_is_a_valid_closed_mesh() {
+        let sphere = sphere(16, 8);
+        assert_eq!(sphere.validate(), Ok(()));
+        let bounds = sphere.bounds().expect("not empty");
+        assert!((bounds.min[1] - 0.0).abs() < 1e-6 && (bounds.max[1] - 1.0).abs() < 1e-6);
+    }
+
+    /// Renders the showcase for a person to look at. Set SHOWCASE_TO to a path
+    /// to keep the image (raw RGBA behind the golden header).
+    #[test]
+    #[ignore = "requires a GPU adapter and driver"]
+    fn the_showcase_renders() {
+        let (width, height) = (640, 360);
+        let mut renderer = Renderer::headless(width, height, RendererConfig::default())
+            .expect("these tests are ignored unless a GPU adapter exists");
+        let frame = build(&mut renderer, width, height);
+        let image = renderer.render_to_image(&frame).expect("reads back");
+        let lit = image
+            .rgba8
+            .chunks_exact(4)
+            .filter(|pixel| pixel[..3].iter().any(|&c| c > 20))
+            .count();
+        assert!(lit > image.rgba8.len() / 8, "most of the frame is lit, not black");
+        if let Some(path) = std::env::var_os("SHOWCASE_TO") {
+            std::fs::write(path, golden::encode(&image)).expect("writable");
+        }
+    }
+
+    /// The M17 frame-rate check: the showcase at 1440p with every phase 1
+    /// feature on, timed over many frames with the GPU's work included. 60 fps
+    /// means 16.6 ms; the High-tier target GPU should be far inside it.
+    #[test]
+    #[ignore = "requires a GPU adapter and driver; measures performance"]
+    fn the_showcase_holds_60_fps_at_1440p() {
+        const FRAMES: u32 = 240;
+        let (width, height) = (2560, 1440);
+        let mut renderer = Renderer::headless(width, height, RendererConfig::default())
+            .expect("these tests are ignored unless a GPU adapter exists");
+        let frame = build(&mut renderer, width, height);
+        // Warm up: pipelines, pool, first exposure.
+        renderer.render_to_image(&frame).expect("reads back");
+
+        let started = std::time::Instant::now();
+        for _ in 0..FRAMES {
+            renderer.render(&frame).expect("renders");
+        }
+        // Reading back waits for every queued frame to finish on the GPU.
+        renderer.render_to_image(&frame).expect("reads back");
+        let per_frame = started.elapsed() / (FRAMES + 1);
+        println!(
+            "showcase at {width}x{height} on {}: {:.3} ms per frame",
+            renderer.adapter_info().name,
+            per_frame.as_secs_f64() * 1000.0
+        );
+        assert!(
+            per_frame < std::time::Duration::from_micros(16_667),
+            "{per_frame:?} per frame is under 60 fps"
+        );
+    }
+}
