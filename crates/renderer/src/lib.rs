@@ -36,6 +36,7 @@ mod frame;
 #[cfg(test)]
 mod golden;
 mod gpu_timing;
+mod ibl;
 pub use gpu_timing::PassTiming;
 mod graph;
 mod image;
@@ -62,8 +63,8 @@ pub use atmosphere::sunlight_transmittance;
 pub use debug_lines::DebugVertex;
 pub use frame::{
     AlphaMode, AmbientLight, AutoExposure, Bloom, DEFAULT_EXPOSURE_EV, DirectionalLight, DrawCommand, Grade,
-    MAX_CASCADES, MaterialDesc, MaterialHandle, MaterialTextures, MeshHandle, PostSettings, RenderFrame,
-    Shading, ShadowSettings, Sky, TextureHandle, Tonemapper,
+    HeightFog, MAX_CASCADES, MaterialDesc, MaterialHandle, MaterialTextures, MeshHandle, PostSettings,
+    RenderFrame, Shading, ShadowSettings, Sky, TextureHandle, Tonemapper,
 };
 pub use image::Image;
 pub use mesh::MeshInfo;
@@ -331,6 +332,8 @@ enum BuiltShader {
     Shadow(wgpu::RenderPipeline, wgpu::RenderPipeline),
     Atmosphere(Box<atmosphere::luts::AtmosphereLuts>),
     Sky(Box<atmosphere::sky::SkyResources>),
+    BrdfLut(Box<ibl::BrdfLut>),
+    Environment(Box<ibl::Environment>),
 }
 
 /// Owns the GPU device, queue, and output (a window's swapchain or an
@@ -370,10 +373,19 @@ pub struct Renderer {
     globals_layout: wgpu::BindGroupLayout,
     globals_buffer: wgpu::Buffer,
     globals_bind_group: wgpu::BindGroup,
+    /// `FogData` for the lit shaders: aerial perspective and height fog.
+    fog_buffer: wgpu::Buffer,
     /// Cascaded shadows: atlas, cascade uniforms, pipeline (C1).
     shadows: shadow_pass::Shadows,
     /// The atmosphere's baked lookup tables (D3).
     atmosphere: atmosphere::luts::AtmosphereLuts,
+    /// The split-sum BRDF table for image-based lighting (C2).
+    brdf_lut: ibl::BrdfLut,
+    /// The sky's environment for image-based lighting, re-baked as the sun
+    /// moves.
+    environment: ibl::Environment,
+    /// Whether this frame re-bakes the environment, decided before recording.
+    environment_bake: bool,
     /// The sky-view LUT and the sky pass, used when a frame has a sky.
     sky: atmosphere::sky::SkyResources,
     draw_buffer: wgpu::Buffer,
@@ -643,6 +655,16 @@ impl Renderer {
                 message,
             })?
         };
+        let brdf_lut = {
+            let source = shaders
+                .source(shaders::BRDF_LUT)
+                .map_err(RenderError::Shader)?
+                .into_owned();
+            ibl::BrdfLut::new(&device, &source).map_err(|message| RenderError::ShaderCompile {
+                shader: shaders::BRDF_LUT.to_owned(),
+                message,
+            })?
+        };
         let sky = {
             let source = shaders
                 .source(shaders::ATMOSPHERE_SKY)
@@ -660,6 +682,7 @@ impl Renderer {
                 message,
             })?
         };
+        let environment = build_environment(&device, &mut shaders, &atmosphere, &sky)?;
         let shadows = {
             let source = shaders
                 .source(shaders::SHADOW_DEPTH)
@@ -677,8 +700,25 @@ impl Renderer {
             )?
         };
         let globals_buffer = pipeline::create_globals_buffer(&device);
-        let globals_bind_group =
-            pipeline::create_globals_bind_group(&device, &globals_layout, &globals_buffer, &shadows);
+        let fog_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("fog-data"),
+            size: atmosphere::sky::FOG_DATA_SIZE as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let globals_bind_group = pipeline::create_globals_bind_group(
+            &device,
+            &globals_layout,
+            &pipeline::GlobalsInputs {
+                globals: &globals_buffer,
+                shadows: &shadows,
+                aerial: &sky.aerial_view,
+                aerial_sampler: &atmosphere.sampler,
+                fog: &fog_buffer,
+                environment: &environment,
+                brdf_lut: &brdf_lut.view,
+            },
+        );
         let (draw_buffer, draw_bind_group) =
             pipeline::create_draw_resources(&device, &draw_layout, draw_stride, INITIAL_DRAW_CAPACITY);
 
@@ -721,9 +761,13 @@ impl Renderer {
             globals_layout,
             globals_buffer,
             globals_bind_group,
+            fog_buffer,
             shadows,
             atmosphere,
             sky,
+            brdf_lut,
+            environment,
+            environment_bake: false,
             draw_buffer,
             draw_bind_group,
             draw_stride,
@@ -1068,7 +1112,65 @@ impl Renderer {
                 label: Some("atmosphere-bake"),
             });
         self.atmosphere.bake(&self.queue, &mut encoder);
+        // The BRDF table is constant; it shares the startup submission.
+        self.brdf_lut.bake(&mut encoder);
         self.queue.submit(std::iter::once(encoder.finish()));
+    }
+
+    /// Rebuilds group 0, after anything it binds is recreated: the shadow
+    /// atlas, the atmosphere's sampler, or the aerial-perspective volume.
+    fn rebuild_globals_bind_group(&mut self) {
+        self.globals_bind_group = pipeline::create_globals_bind_group(
+            &self.device,
+            &self.globals_layout,
+            &pipeline::GlobalsInputs {
+                globals: &self.globals_buffer,
+                shadows: &self.shadows,
+                aerial: &self.sky.aerial_view,
+                aerial_sampler: &self.atmosphere.sampler,
+                fog: &self.fog_buffer,
+                environment: &self.environment,
+                brdf_lut: &self.brdf_lut.view,
+            },
+        );
+    }
+
+    /// Rebuilds the environment after what it reads is recreated (the
+    /// atmosphere or the sky), keeping the old one if the shader fails.
+    fn rebuild_environment(&mut self) {
+        match build_environment(&self.device, &mut self.shaders, &self.atmosphere, &self.sky) {
+            Ok(environment) => {
+                self.environment = environment;
+                self.rebuild_globals_bind_group();
+            }
+            Err(error) => {
+                self.shader_failures
+                    .insert(shaders::IBL_ENVIRONMENT, error.to_string());
+                self.refresh_shader_error();
+            }
+        }
+    }
+
+    /// Decides whether this frame re-bakes the environment, and readies it.
+    fn prepare_environment(&mut self, frame: &RenderFrame) {
+        self.environment_bake = false;
+        self.environment.set_enabled(&self.queue, frame.sky.is_some());
+        let Some(sky) = &frame.sky else {
+            return;
+        };
+        let sun = glam::Vec3::from(sky.sun_direction)
+            .try_normalize()
+            .unwrap_or(glam::Vec3::Y);
+        let key = ibl::BakeKey {
+            sun: sun.to_array(),
+            sun_illuminance: sky.sun_illuminance,
+            camera_radius: atmosphere::sky::camera_radius(&self.atmosphere.params, frame.camera_position[1]),
+        };
+        if self.environment.baked.is_some_and(|baked| baked.still_fits(&key)) {
+            return;
+        }
+        self.environment.prepare_bake(&self.queue, key, None);
+        self.environment_bake = true;
     }
 
     /// Fits this frame's cascades and uploads them, recreating the atlas
@@ -1078,12 +1180,7 @@ impl Renderer {
         let layout = shadow_pass::AtlasLayout::for_settings(&frame.light.shadow, max_dimension);
         if layout != self.shadows.atlas.layout {
             self.shadows.atlas = shadow_pass::Atlas::new(&self.device, layout);
-            self.globals_bind_group = pipeline::create_globals_bind_group(
-                &self.device,
-                &self.globals_layout,
-                &self.globals_buffer,
-                &self.shadows,
-            );
+            self.rebuild_globals_bind_group();
         }
         self.shadows.cascades = if layout.cascades == 0 {
             Vec::new()
@@ -1169,6 +1266,25 @@ impl Renderer {
                             message,
                         })?,
                 ))
+            }
+            PipelineFamily::Environment => BuiltShader::Environment(Box::new(build_environment(
+                &self.device,
+                &mut self.shaders,
+                &self.atmosphere,
+                &self.sky,
+            )?)),
+            PipelineFamily::BrdfLut => {
+                let source = self
+                    .shaders
+                    .source(shaders::BRDF_LUT)
+                    .map_err(RenderError::Shader)?
+                    .into_owned();
+                BuiltShader::BrdfLut(Box::new(ibl::BrdfLut::new(&self.device, &source).map_err(
+                    |message| RenderError::ShaderCompile {
+                        shader: shaders::BRDF_LUT.to_owned(),
+                        message,
+                    },
+                )?))
             }
             PipelineFamily::Sky => {
                 let source = self
@@ -1267,9 +1383,22 @@ impl Renderer {
             BuiltShader::Atmosphere(luts) => {
                 self.atmosphere = *luts;
                 self.sky.rebind(&self.device, &self.atmosphere);
+                self.rebuild_environment();
                 self.bake_atmosphere();
             }
-            BuiltShader::Sky(sky) => self.sky = *sky,
+            BuiltShader::BrdfLut(lut) => {
+                self.brdf_lut = *lut;
+                self.bake_atmosphere();
+                self.rebuild_globals_bind_group();
+            }
+            BuiltShader::Environment(environment) => {
+                self.environment = *environment;
+                self.rebuild_globals_bind_group();
+            }
+            BuiltShader::Sky(sky) => {
+                self.sky = *sky;
+                self.rebuild_environment();
+            }
             BuiltShader::Shadow(plain, masked) => {
                 self.shadows.pipeline = plain;
                 self.shadows.masked_pipeline = masked;
@@ -1411,6 +1540,12 @@ impl Renderer {
         }
 
         self.prepare_shadows(frame);
+        self.prepare_environment(frame);
+        self.queue.write_buffer(
+            &self.fog_buffer,
+            0,
+            &atmosphere::sky::fog_data_bytes(frame.sky.as_ref(), frame.fog.as_ref()),
+        );
         if let Some(sky) = &frame.sky {
             let radius = atmosphere::sky::camera_radius(&self.atmosphere.params, frame.camera_position[1]);
             let inverse = uniforms::inverse(&frame.view_proj).unwrap_or(uniforms::IDENTITY);
@@ -1773,6 +1908,30 @@ fn request_adapter(
         ..Default::default()
     }))
     .map_err(|error| RenderError::NoAdapter(error.to_string()))
+}
+
+/// Builds the environment bake against the atmosphere and sky it reads.
+fn build_environment(
+    device: &wgpu::Device,
+    shaders: &mut ShaderLibrary,
+    atmosphere: &atmosphere::luts::AtmosphereLuts,
+    sky: &atmosphere::sky::SkyResources,
+) -> Result<ibl::Environment, RenderError> {
+    let source = shaders
+        .source(shaders::IBL_ENVIRONMENT)
+        .map_err(RenderError::Shader)?
+        .into_owned();
+    ibl::Environment::new(
+        device,
+        &source,
+        &atmosphere.params_buffer,
+        &sky.sky_view_view,
+        &atmosphere.sampler,
+    )
+    .map_err(|message| RenderError::ShaderCompile {
+        shader: shaders::IBL_ENVIRONMENT.to_owned(),
+        message,
+    })
 }
 
 fn request_device(adapter: &wgpu::Adapter) -> Result<(wgpu::Device, wgpu::Queue), RenderError> {

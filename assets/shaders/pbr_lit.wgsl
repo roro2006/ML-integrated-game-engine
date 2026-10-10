@@ -64,6 +64,10 @@ struct MaterialParams {
 
 // The directional light's cascaded shadows (C1).
 #include "shadow.wgsl"
+// Aerial perspective and height fog between the camera and the surface.
+#include "aerial.wgsl"
+// Ambient light from the sky's environment when there is one (C2).
+#include "ibl.wgsl"
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -157,8 +161,13 @@ fn fs_main(fragment: VertexOutput, @builtin(front_facing) front_facing: bool) ->
     let geometric = normalize(fragment.world_normal) * select(-1.0, 1.0, front_facing);
     let shadow = directional_shadow(fragment.world_position, geometric);
     var lit = brdf_direct(normal, to_view, to_light, albedo, metallic, roughness, irradiance * shadow);
-    lit += ambient_flat(albedo, metallic, globals.ambient_color.rgb * globals.ambient_color.w, occlusion);
+    if environment.header.x > 0.5 {
+        lit += image_based_light(normal, to_view, albedo, metallic, roughness, occlusion);
+    } else {
+        lit += ambient_flat(albedo, metallic, globals.ambient_color.rgb * globals.ambient_color.w, occlusion);
+    }
     lit += emitted;
+    lit = apply_atmosphere(lit, fragment.world_position, globals.camera_position.xyz, globals.view_proj);
 
     // The flash overlay after lighting, exactly as lit.wgsl (ADR-0017).
     let flashed = mix(lit, draw.flash.rgb, clamp(draw.flash.w, 0.0, 1.0));

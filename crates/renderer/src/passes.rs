@@ -114,6 +114,12 @@ impl Renderer {
                 self.sky.record_view(&mut context.encoder);
                 Ok(())
             });
+            if self.environment_bake {
+                graph.add_pass("environment", &[], &[], move |context| {
+                    self.environment.record_bake(&mut context.encoder);
+                    Ok(())
+                });
+            }
         }
         graph.add_pass("depth-prepass", &[], &[depth], move |context| {
             self.depth_prepass(context, depth, frame, plan)

@@ -14,6 +14,13 @@
 //   @group(0) @binding(4)  linear sampler
 //   @group(0) @binding(5)  sky-view out          storage, rgba16float
 //   @group(0) @binding(6)  sky-view LUT          sampled, for the sky pass
+//   @group(0) @binding(7)  aerial perspective    storage 3D, rgba16float
+//
+// The aerial-perspective LUT is a froxel volume over the camera's view:
+// x and y across the screen, z in distance slices out to `camera.y` km.
+// Each texel holds the light scattered toward the camera along the view ray
+// up to that distance (rgb, per unit sun illuminance) and the fraction of
+// the surface's light that survives it (a).
 
 #include "atmosphere.wgsl"
 
@@ -21,7 +28,7 @@ struct SkyFrame {
     inv_view_proj: mat4x4<f32>,  // clip to world, for view rays
     sun: vec4<f32>,              // xyz = unit direction to the sun, w = cos of its angular radius
     sun_illuminance: vec4<f32>,  // rgb = illuminance at the top of the atmosphere
-    camera: vec4<f32>,           // x = camera radius from the planet centre, km
+    camera: vec4<f32>,           // x = camera radius from the planet centre, km; y = aerial range, km
 }
 
 @group(0) @binding(0) var<uniform> atmosphere: Atmosphere;
@@ -31,6 +38,7 @@ struct SkyFrame {
 @group(0) @binding(4) var lut_sampler: sampler;
 @group(0) @binding(5) var sky_view_out: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(6) var sky_view_lut: texture_2d<f32>;
+@group(0) @binding(7) var aerial_out: texture_storage_3d<rgba16float, write>;
 
 const PI: f32 = 3.14159265358979;
 // Must match SKY_STEPS in atmosphere/sky.rs.
@@ -62,29 +70,31 @@ fn multi_scattering(r: f32, mu_sun: f32) -> vec3<f32> {
     return textureSampleLevel(multi_scattering_lut, lut_sampler, clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).rgb;
 }
 
-// The view zenith angle where the planet's limb is seen from radius `r`.
-fn horizon_zenith(r: f32) -> vec2<f32> {
-    let bottom = atmosphere.radii.x;
-    let beta = acos(clamp(sqrt(max(r * r - bottom * bottom, 0.0)) / r, -1.0, 1.0));
-    return vec2<f32>(PI - beta, beta);
+
+// Luminance scattered toward the camera per unit sun illuminance along
+// `view` from radius `r`, in a frame whose up is +y, over at most `max_t` km
+// in `steps` steps; and the transmittance over the same path. Single
+// scattering plus the multiple-scattering LUT.
+struct Scattered {
+    luminance: vec3<f32>,
+    transmittance: vec3<f32>,
 }
 
-// Sky luminance per unit sun illuminance along `view` from radius `r`, in a
-// frame whose up is +y. Single scattering plus the multiple-scattering LUT.
-fn integrate_sky(r: f32, view: vec3<f32>, sun: vec3<f32>) -> vec3<f32> {
+fn integrate(r: f32, view: vec3<f32>, sun: vec3<f32>, max_t: f32, steps: u32) -> Scattered {
     let bottom = atmosphere.radii.x;
     let ground = distance_to_ground(atmosphere, r, view.y);
     var ray_length = distance_to_top(atmosphere, r, view.y);
     if ground >= 0.0 {
         ray_length = ground;
     }
+    ray_length = min(ray_length, max_t);
     let cos_angle = dot(view, sun);
     let phase_rayleigh = rayleigh_phase(cos_angle);
     let phase_mie = mie_phase(cos_angle, atmosphere.mie.w);
-    let dt = ray_length / f32(SKY_STEPS);
+    let dt = ray_length / f32(steps);
     var luminance = vec3<f32>(0.0);
     var throughput = vec3<f32>(1.0);
-    for (var step = 0u; step < SKY_STEPS; step++) {
+    for (var step = 0u; step < steps; step++) {
         let t = (f32(step) + 0.5) * dt;
         let point = vec3<f32>(0.0, r, 0.0) + view * t;
         let height = length(point);
@@ -98,12 +108,43 @@ fn integrate_sky(r: f32, view: vec3<f32>, sun: vec3<f32>) -> vec3<f32> {
         luminance += throughput * (single + multiple) * fraction;
         throughput *= step_transmittance;
     }
-    return luminance;
+    return Scattered(luminance, throughput);
+}
+
+fn integrate_sky(r: f32, view: vec3<f32>, sun: vec3<f32>) -> vec3<f32> {
+    return integrate(r, view, sun, 1e9, SKY_STEPS).luminance;
+}
+
+// The world-space view direction through a screen position in NDC.
+fn view_ray(ndc: vec2<f32>) -> vec3<f32> {
+    let near = sky.inv_view_proj * vec4<f32>(ndc, 0.0, 1.0);
+    let far = sky.inv_view_proj * vec4<f32>(ndc, 1.0, 1.0);
+    return normalize(far.xyz / far.w - near.xyz / near.w);
+}
+
+// Steps per aerial-perspective froxel: more for the farther slices.
+const AERIAL_STEPS_PER_SLICE: u32 = 1u;
+const AERIAL_MIN_STEPS: u32 = 4u;
+
+@compute @workgroup_size(4, 4, 4)
+fn aerial_perspective_main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let size = textureDimensions(aerial_out);
+    if any(id >= size) {
+        return;
+    }
+    let uv = (vec2<f32>(id.xy) + 0.5) / vec2<f32>(size.xy);
+    // Texture v runs down the screen; NDC y runs up.
+    let view = view_ray(vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0));
+    let distance = (f32(id.z) + 0.5) / f32(size.z) * sky.camera.y;
+    let steps = max(AERIAL_MIN_STEPS, (id.z + 1u) * AERIAL_STEPS_PER_SLICE);
+    let scattered = integrate(sky.camera.x, view, sky.sun.xyz, distance, steps);
+    let survived = dot(scattered.transmittance, vec3<f32>(1.0 / 3.0));
+    textureStore(aerial_out, id, vec4<f32>(scattered.luminance, survived));
 }
 
 // LUT texel to view zenith cosine and the cosine of the azimuth from the sun.
 fn sky_view_angles(uv: vec2<f32>, r: f32) -> vec2<f32> {
-    let horizon = horizon_zenith(r);
+    let horizon = horizon_zenith(atmosphere, r);
     var zenith: f32;
     if uv.y < 0.5 {
         let coord = 1.0 - 2.0 * uv.y;
@@ -116,18 +157,6 @@ fn sky_view_angles(uv: vec2<f32>, r: f32) -> vec2<f32> {
     return vec2<f32>(cos(zenith), -(azimuth_coord * 2.0 - 1.0));
 }
 
-fn sky_view_uv(r: f32, cos_zenith: f32, cos_azimuth: f32) -> vec2<f32> {
-    let horizon = horizon_zenith(r);
-    let zenith = acos(clamp(cos_zenith, -1.0, 1.0));
-    var v: f32;
-    if zenith < horizon.x {
-        v = (1.0 - sqrt(max(1.0 - zenith / horizon.x, 0.0))) * 0.5;
-    } else {
-        v = sqrt(clamp((zenith - horizon.x) / horizon.y, 0.0, 1.0)) * 0.5 + 0.5;
-    }
-    let u = sqrt(clamp(-cos_azimuth * 0.5 + 0.5, 0.0, 1.0));
-    return vec2<f32>(u, v);
-}
 
 @compute @workgroup_size(8, 8)
 fn sky_view_main(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -160,9 +189,7 @@ fn sky_vs(@builtin(vertex_index) index: u32) -> SkyVertex {
 
 @fragment
 fn sky_fs(vertex: SkyVertex) -> @location(0) vec4<f32> {
-    let near = sky.inv_view_proj * vec4<f32>(vertex.ndc, 0.0, 1.0);
-    let far = sky.inv_view_proj * vec4<f32>(vertex.ndc, 1.0, 1.0);
-    let view = normalize(far.xyz / far.w - near.xyz / near.w);
+    let view = view_ray(vertex.ndc);
     let sun = sky.sun.xyz;
     let r = sky.camera.x;
 
@@ -173,7 +200,7 @@ fn sky_fs(vertex: SkyVertex) -> @location(0) vec4<f32> {
     if dot(flat_view, flat_view) > 1e-8 && dot(flat_sun, flat_sun) > 1e-8 {
         cos_azimuth = dot(normalize(flat_view), normalize(flat_sun));
     }
-    let uv = sky_view_uv(r, view.y, cos_azimuth);
+    let uv = sky_view_uv(atmosphere, r, view.y, cos_azimuth);
     var luminance = textureSampleLevel(sky_view_lut, lut_sampler, uv, 0.0).rgb * sky.sun_illuminance.rgb;
 
     // The sun's disc: its radiance is the illuminance spread over its solid

@@ -79,3 +79,24 @@ fn transmittance_uv(atmosphere: Atmosphere, r: f32, mu: f32) -> vec2<f32> {
     let d_max = rho + horizon;
     return vec2<f32>((d - d_min) / (d_max - d_min), rho / horizon);
 }
+
+// The view zenith angle where the planet's limb is seen from radius `r`.
+fn horizon_zenith(atmosphere: Atmosphere, r: f32) -> vec2<f32> {
+    let bottom = atmosphere.radii.x;
+    let beta = acos(clamp(sqrt(max(r * r - bottom * bottom, 0.0)) / r, -1.0, 1.0));
+    return vec2<f32>(3.14159265358979 - beta, beta);
+}
+
+fn sky_view_uv(atmosphere: Atmosphere, r: f32, cos_zenith: f32, cos_azimuth: f32) -> vec2<f32> {
+    // Sky-view LUT coordinate for a view zenith and its azimuth from the sun.
+    let horizon = horizon_zenith(atmosphere, r);
+    let zenith = acos(clamp(cos_zenith, -1.0, 1.0));
+    var v: f32;
+    if zenith < horizon.x {
+        v = (1.0 - sqrt(max(1.0 - zenith / horizon.x, 0.0))) * 0.5;
+    } else {
+        v = sqrt(clamp((zenith - horizon.x) / horizon.y, 0.0, 1.0)) * 0.5 + 0.5;
+    }
+    let u = sqrt(clamp(-cos_azimuth * 0.5 + 0.5, 0.0, 1.0));
+    return vec2<f32>(u, v);
+}

@@ -60,6 +60,8 @@ struct DrawData {
 // The directional light's cascaded shadows (C1); flat materials receive
 // them so the slice reads the same as PBR content under the sun.
 #include "shadow.wgsl"
+// Aerial perspective and height fog between the camera and the surface.
+#include "aerial.wgsl"
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -111,7 +113,12 @@ fn fs_main(fragment: VertexOutput) -> @location(0) vec4<f32> {
     // The tint multiplies the painted vertex colour; white vertices make this
     // exactly the old flat colour.
     let albedo = draw.base_color.rgb * fragment.color;
-    let lit = albedo * (direct + ambient);
+    let lit = apply_atmosphere(
+        albedo * (direct + ambient),
+        fragment.world_position,
+        globals.camera_position.xyz,
+        globals.view_proj,
+    );
 
     // The flash overlay is mixed in after lighting, so a hit flash reads the
     // same on the lit and the shadowed side of a body. Amount 0 is a no-op.

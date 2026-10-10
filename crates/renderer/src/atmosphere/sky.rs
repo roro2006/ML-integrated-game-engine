@@ -14,6 +14,14 @@ pub(crate) const SKY_VIEW_SIZE: (u32, u32) = (192, 108);
 pub(crate) const SKY_STEPS: u32 = 30;
 /// `SkyFrame` in `atmosphere_sky.wgsl`: a matrix and three `vec4`s.
 pub(crate) const SKY_FRAME_SIZE: usize = 112;
+/// Aerial-perspective froxels: screen x, screen y, distance slices.
+pub(crate) const AERIAL_SIZE: (u32, u32, u32) = (32, 32, 32);
+/// How far the aerial-perspective volume reaches, km. Beyond it the last
+/// slice holds, which is close to the sky's own colour at that range.
+pub(crate) const AERIAL_RANGE_KM: f32 = 32.0;
+/// `FogData` in `aerial.wgsl`: four `vec4`s.
+pub(crate) const FOG_DATA_SIZE: usize = 64;
+const AERIAL_WORKGROUP: u32 = 4;
 
 /// The lowest the camera is taken to be, a metre above the ground: at the
 /// ground itself the horizon is singular.
@@ -43,11 +51,54 @@ pub(crate) fn sky_frame_bytes(
     words[16..20].copy_from_slice(&[sun.x, sun.y, sun.z, sky.sun_angular_radius.cos()]);
     words[20..23].copy_from_slice(&sky.sun_illuminance);
     words[24] = camera_radius;
+    words[25] = AERIAL_RANGE_KM;
     let mut out = [0_u8; SKY_FRAME_SIZE];
     for (chunk, word) in out.chunks_exact_mut(4).zip(words) {
         chunk.copy_from_slice(&word.to_le_bytes());
     }
     out
+}
+
+/// The `FogData` block: aerial perspective when there is a sky, height fog
+/// when there is fog, and neither otherwise.
+pub(crate) fn fog_data_bytes(
+    sky: Option<&Sky>,
+    fog: Option<&crate::frame::HeightFog>,
+) -> [u8; FOG_DATA_SIZE] {
+    let mut words = [0.0_f32; FOG_DATA_SIZE / 4];
+    if let Some(sky) = sky {
+        words[0] = 1.0;
+        words[1] = AERIAL_RANGE_KM;
+        words[4..7].copy_from_slice(&sky.sun_illuminance);
+    }
+    if let Some(fog) = fog {
+        words[8..12].copy_from_slice(&[
+            fog.density,
+            fog.falloff,
+            fog.base_height,
+            fog.max_opacity.clamp(0.0, 1.0),
+        ]);
+        words[12..15].copy_from_slice(&fog.color);
+        words[15] = 1.0;
+    }
+    let mut out = [0_u8; FOG_DATA_SIZE];
+    for (chunk, word) in out.chunks_exact_mut(4).zip(words) {
+        chunk.copy_from_slice(&word.to_le_bytes());
+    }
+    out
+}
+
+/// CPU mirror of `height_fog_depth` in `aerial.wgsl`.
+#[cfg(test)]
+pub(crate) fn height_fog_depth(fog: &crate::frame::HeightFog, from: [f32; 3], to: [f32; 3]) -> f32 {
+    let length = glam::Vec3::from(from).distance(glam::Vec3::from(to));
+    let rise = (to[1] - from[1]) * fog.falloff;
+    let shape = if rise.abs() > 1e-4 {
+        (1.0 - (-rise).exp()) / rise
+    } else {
+        1.0
+    };
+    fog.density * (-fog.falloff * (from[1] - fog.base_height)).exp() * length * shape
 }
 
 /// The sky-view LUT, its per-frame uniform, and both pipelines.
@@ -59,7 +110,12 @@ pub(crate) struct SkyResources {
         expect(dead_code, reason = "read back by the GPU tests; the views keep it alive")
     )]
     pub(crate) sky_view: wgpu::Texture,
-    sky_view_view: wgpu::TextureView,
+    /// The sky-view LUT, sampled by the sky pass and the environment bake.
+    pub(crate) sky_view_view: wgpu::TextureView,
+    /// The aerial-perspective froxels, sampled by the lit shaders.
+    pub(crate) aerial_view: wgpu::TextureView,
+    aerial_pipeline: wgpu::ComputePipeline,
+    aerial_group: wgpu::BindGroup,
     view_pipeline: wgpu::ComputePipeline,
     draw_pipeline: wgpu::RenderPipeline,
     view_group: wgpu::BindGroup,
@@ -86,6 +142,14 @@ impl SkyResources {
             layout: None,
             module: &module,
             entry_point: Some("sky_view_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+        let aerial_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("aerial-perspective"),
+            layout: None,
+            module: &module,
+            entry_point: Some("aerial_perspective_main"),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             cache: None,
         });
@@ -145,6 +209,22 @@ impl SkyResources {
             view_formats: &[],
         });
         let sky_view_view = sky_view.create_view(&wgpu::TextureViewDescriptor::default());
+        let (aerial_width, aerial_height, aerial_depth) = AERIAL_SIZE;
+        let aerial = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("aerial-perspective"),
+            size: wgpu::Extent3d {
+                width: aerial_width,
+                height: aerial_height,
+                depth_or_array_layers: aerial_depth,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D3,
+            format: LUT_FORMAT,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let aerial_view = aerial.create_view(&wgpu::TextureViewDescriptor::default());
         let (view_group, draw_group) = bind_groups(
             device,
             &view_pipeline,
@@ -153,10 +233,14 @@ impl SkyResources {
             &sky_view_view,
             luts,
         );
+        let aerial_group = aerial_bind_group(device, &aerial_pipeline, &frame_buffer, &aerial_view, luts);
         Ok(Self {
             frame_buffer,
             sky_view,
             sky_view_view,
+            aerial_view,
+            aerial_pipeline,
+            aerial_group,
             view_pipeline,
             draw_pipeline,
             view_group,
@@ -166,6 +250,13 @@ impl SkyResources {
 
     /// Rebinds to new LUTs, after the atmosphere is rebuilt.
     pub(crate) fn rebind(&mut self, device: &wgpu::Device, luts: &AtmosphereLuts) {
+        self.aerial_group = aerial_bind_group(
+            device,
+            &self.aerial_pipeline,
+            &self.frame_buffer,
+            &self.aerial_view,
+            luts,
+        );
         (self.view_group, self.draw_group) = bind_groups(
             device,
             &self.view_pipeline,
@@ -186,6 +277,15 @@ impl SkyResources {
         pass.set_bind_group(0, &self.view_group, &[]);
         let (width, height) = SKY_VIEW_SIZE;
         pass.dispatch_workgroups(width.div_ceil(WORKGROUP), height.div_ceil(WORKGROUP), 1);
+        // The aerial-perspective froxels, from the same atmosphere and sun.
+        pass.set_pipeline(&self.aerial_pipeline);
+        pass.set_bind_group(0, &self.aerial_group, &[]);
+        let (x, y, z) = AERIAL_SIZE;
+        pass.dispatch_workgroups(
+            x.div_ceil(AERIAL_WORKGROUP),
+            y.div_ceil(AERIAL_WORKGROUP),
+            z.div_ceil(AERIAL_WORKGROUP),
+        );
     }
 
     /// Draws the sky into `pass`, which has the scene colour and depth bound.
@@ -194,6 +294,45 @@ impl SkyResources {
         pass.set_bind_group(0, &self.draw_group, &[]);
         pass.draw(0..3, 0..1);
     }
+}
+
+fn aerial_bind_group(
+    device: &wgpu::Device,
+    pipeline: &wgpu::ComputePipeline,
+    frame_buffer: &wgpu::Buffer,
+    aerial: &wgpu::TextureView,
+    luts: &AtmosphereLuts,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("aerial-perspective-bind-group"),
+        layout: &pipeline.get_bind_group_layout(0),
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: luts.params_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: frame_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(&luts.transmittance_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(&luts.multi_scattering_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::Sampler(&luts.sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 7,
+                resource: wgpu::BindingResource::TextureView(aerial),
+            },
+        ],
+    })
 }
 
 fn bind_groups(
@@ -350,6 +489,59 @@ mod tests {
             (sun_length - 1.0).abs() < 1e-6,
             "the sun direction is unit length"
         );
+    }
+
+    #[test]
+    fn height_fog_is_nothing_at_the_camera_and_grows_with_distance_and_depth() {
+        let fog = crate::frame::HeightFog::default();
+        let eye = [0.0, 2.0, 0.0];
+        assert_eq!(height_fog_depth(&fog, eye, eye), 0.0);
+        let mut previous = 0.0;
+        for metres in [1.0_f32, 10.0, 100.0, 1000.0] {
+            let depth = height_fog_depth(&fog, eye, [metres, 2.0, 0.0]);
+            assert!(depth > previous, "farther is foggier: {depth} after {previous}");
+            previous = depth;
+        }
+        // The same distance lower down passes through denser fog.
+        let level = height_fog_depth(&fog, [0.0, 50.0, 0.0], [100.0, 50.0, 0.0]);
+        let low = height_fog_depth(&fog, [0.0, 5.0, 0.0], [100.0, 5.0, 0.0]);
+        assert!(low > level);
+        // The closed form matches midpoint integration, sloping or level.
+        let numeric = |start: [f32; 3], end: [f32; 3]| {
+            let steps = 10_000;
+            let length = glam::Vec3::from(start).distance(glam::Vec3::from(end));
+            (0..steps)
+                .map(|step| {
+                    let t = (step as f32 + 0.5) / steps as f32;
+                    let height = start[1] + (end[1] - start[1]) * t;
+                    fog.density * (-fog.falloff * (height - fog.base_height)).exp() * length / steps as f32
+                })
+                .sum::<f32>()
+        };
+        for (start, end) in [
+            ([0.0, 2.0, 0.0], [300.0, 80.0, 0.0]),
+            ([0.0, 40.0, 0.0], [10.0, 40.0, 5.0]),
+        ] {
+            let closed = height_fog_depth(&fog, start, end);
+            assert!((closed - numeric(start, end)).abs() / closed < 1e-3);
+        }
+    }
+
+    #[test]
+    fn the_fog_block_switches_each_effect_on_only_when_asked() {
+        let read = |bytes: &[u8; FOG_DATA_SIZE], index: usize| {
+            let mut four = [0_u8; 4];
+            four.copy_from_slice(&bytes[index * 4..index * 4 + 4]);
+            f32::from_le_bytes(four)
+        };
+        let neither = fog_data_bytes(None, None);
+        assert_eq!((read(&neither, 0), read(&neither, 15)), (0.0, 0.0));
+        let both = fog_data_bytes(Some(&Sky::default()), Some(&crate::frame::HeightFog::default()));
+        assert_eq!(
+            (read(&both, 0), read(&both, 1), read(&both, 15)),
+            (1.0, AERIAL_RANGE_KM, 1.0)
+        );
+        assert_eq!(read(&both, 8), crate::frame::HeightFog::default().density);
     }
 
     #[test]

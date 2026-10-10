@@ -108,6 +108,66 @@ pub(crate) fn globals_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
                 count: None,
             },
+            // Aerial perspective and height fog (D3): the froxel volume, its
+            // sampler, and the per-frame `FogData`.
+            wgpu::BindGroupLayoutEntry {
+                binding: 4,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D3,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 5,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 6,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(crate::atmosphere::sky::FOG_DATA_SIZE as u64),
+                },
+                count: None,
+            },
+            // Image-based light (C2): the prefiltered environment cube, its
+            // irradiance harmonics, and the split-sum BRDF table.
+            wgpu::BindGroupLayoutEntry {
+                binding: 7,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::Cube,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 8,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(crate::ibl::ENVIRONMENT_UNIFORM_SIZE),
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 9,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
         ],
     })
 }
@@ -227,13 +287,33 @@ pub(crate) fn create_globals_buffer(device: &wgpu::Device) -> wgpu::Buffer {
     })
 }
 
-/// Group 0's bind group. Rebuilt when the shadow atlas is recreated.
+/// What group 0 binds besides `Globals`.
+pub(crate) struct GlobalsInputs<'a> {
+    pub(crate) globals: &'a wgpu::Buffer,
+    pub(crate) shadows: &'a crate::shadow_pass::Shadows,
+    pub(crate) aerial: &'a wgpu::TextureView,
+    pub(crate) aerial_sampler: &'a wgpu::Sampler,
+    pub(crate) fog: &'a wgpu::Buffer,
+    pub(crate) environment: &'a crate::ibl::Environment,
+    pub(crate) brdf_lut: &'a wgpu::TextureView,
+}
+
+/// Group 0's bind group. Rebuilt when the shadow atlas or the atmosphere's
+/// resources are recreated.
 pub(crate) fn create_globals_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
-    globals: &wgpu::Buffer,
-    shadows: &crate::shadow_pass::Shadows,
+    inputs: &GlobalsInputs<'_>,
 ) -> wgpu::BindGroup {
+    let GlobalsInputs {
+        globals,
+        shadows,
+        aerial,
+        aerial_sampler,
+        fog,
+        environment,
+        brdf_lut,
+    } = inputs;
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("globals-bind-group"),
         layout,
@@ -257,6 +337,30 @@ pub(crate) fn create_globals_bind_group(
             wgpu::BindGroupEntry {
                 binding: 3,
                 resource: wgpu::BindingResource::Sampler(&shadows.sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::TextureView(aerial),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: wgpu::BindingResource::Sampler(aerial_sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 6,
+                resource: fog.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 7,
+                resource: wgpu::BindingResource::TextureView(&environment.prefiltered_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 8,
+                resource: environment.uniform.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 9,
+                resource: wgpu::BindingResource::TextureView(brdf_lut),
             },
         ],
     })

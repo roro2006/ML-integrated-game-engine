@@ -42,6 +42,19 @@ pub(crate) const PBR_LIT: &str = "pbr_lit.wgsl";
 /// Bakes the atmosphere's transmittance and multiple-scattering LUTs (D3).
 pub(crate) const ATMOSPHERE_LUTS: &str = "atmosphere_luts.wgsl";
 
+/// The split-sum BRDF integration LUT for image-based lighting (C2).
+pub(crate) const BRDF_LUT: &str = "brdf_lut.wgsl";
+
+/// Bakes the environment: sky cube, prefiltered mips, irradiance (C2).
+pub(crate) const IBL_ENVIRONMENT: &str = "ibl_environment.wgsl";
+
+/// Image-based ambient light for PBR. Included, never compiled alone.
+pub(crate) const IBL: &str = "ibl.wgsl";
+
+/// Aerial perspective and height fog for the lit shaders. Included, never
+/// compiled alone.
+pub(crate) const AERIAL: &str = "aerial.wgsl";
+
 /// The sky-view LUT and the fullscreen sky (D3).
 pub(crate) const ATMOSPHERE_SKY: &str = "atmosphere_sky.wgsl";
 
@@ -80,6 +93,8 @@ pub(crate) enum PipelineFamily {
     Shadow,
     Atmosphere,
     Sky,
+    BrdfLut,
+    Environment,
 }
 
 /// Includes are tracked by `ShaderLibrary`; this table owns rebuild routing.
@@ -95,6 +110,8 @@ pub(crate) const PIPELINES: &[(&str, PipelineFamily)] = &[
     (SHADOW_DEPTH, PipelineFamily::Shadow),
     (ATMOSPHERE_LUTS, PipelineFamily::Atmosphere),
     (ATMOSPHERE_SKY, PipelineFamily::Sky),
+    (BRDF_LUT, PipelineFamily::BrdfLut),
+    (IBL_ENVIRONMENT, PipelineFamily::Environment),
 ];
 
 pub(crate) fn affected_pipelines(changed: &[String]) -> Vec<(&'static str, PipelineFamily)> {
@@ -141,6 +158,10 @@ const EMBEDDED: &[(&str, &str)] = &[
     (ATMOSPHERE_LUTS, shader_file!("atmosphere_luts.wgsl")),
     (ATMOSPHERE, shader_file!("atmosphere.wgsl")),
     (ATMOSPHERE_SKY, shader_file!("atmosphere_sky.wgsl")),
+    (AERIAL, shader_file!("aerial.wgsl")),
+    (BRDF_LUT, shader_file!("brdf_lut.wgsl")),
+    (IBL_ENVIRONMENT, shader_file!("ibl_environment.wgsl")),
+    (IBL, shader_file!("ibl.wgsl")),
 ];
 
 fn embedded_source(name: &str) -> Option<&'static str> {

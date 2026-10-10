@@ -438,6 +438,38 @@ pub struct RenderFrame {
     /// The physically based sky behind the scene (D3). `None` leaves the
     /// clear colour, as before the sky existed.
     pub sky: Option<Sky>,
+    /// Exponential height fog over the scene. `None` draws none.
+    pub fog: Option<HeightFog>,
+}
+
+/// Fog that thickens toward the ground, applied to every lit surface by the
+/// distance light travels through it to the camera.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HeightFog {
+    /// Extinction per metre at `base_height`.
+    pub density: f32,
+    /// How fast density falls with height, per metre: density halves every
+    /// `ln 2 / falloff` metres up.
+    pub falloff: f32,
+    /// The height, in metres, where the density is `density`.
+    pub base_height: f32,
+    /// The fog's own light, linear RGB, in scene units.
+    pub color: [f32; 3],
+    /// The most the fog may hide, `0..1`, so distant shapes keep a trace.
+    pub max_opacity: f32,
+}
+
+impl Default for HeightFog {
+    /// A light valley haze: thin at eye height, gone a few hundred metres up.
+    fn default() -> Self {
+        Self {
+            density: 0.002,
+            falloff: 0.01,
+            base_height: 0.0,
+            color: [0.5, 0.55, 0.6],
+            max_opacity: 0.9,
+        }
+    }
 }
 
 /// The sky and its sun for one frame.
@@ -489,6 +521,7 @@ impl RenderFrame {
             debug_lines: Vec::new(),
             post: PostSettings::default(),
             sky: None,
+            fog: None,
         }
     }
 

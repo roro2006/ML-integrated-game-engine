@@ -1505,3 +1505,231 @@ fn the_sky_brightens_smoothly_as_the_sun_climbs() {
         assert!(change > -1.0, "the sky darkens at step {index}: {means:.1?}");
     }
 }
+
+/// D3 acceptance: the air between the camera and a surface. Identical grey
+/// panels stand at eye height ever farther away, each scaled to the same
+/// size on screen, side by side so none hides another.
+mod air {
+    use super::*;
+    use crate::{HeightFog, Sky};
+
+    const EYE: Vec3 = [0.0, 2.0, 0.0];
+    /// Distances, metres, and where each panel sits across the view. Height
+    /// fog acts within a valley, the air itself over kilometres.
+    const NEAR: [(f32, f32); 5] = [
+        (5.0, -0.6),
+        (20.0, -0.3),
+        (80.0, 0.0),
+        (320.0, 0.3),
+        (1280.0, 0.6),
+    ];
+    const FAR: [(f32, f32); 5] = [
+        (1000.0, -0.6),
+        (4000.0, -0.3),
+        (8000.0, 0.0),
+        (16000.0, 0.3),
+        (30000.0, 0.6),
+    ];
+
+    /// A unit square in x and y facing +z, toward the camera.
+    fn panel() -> MeshData {
+        MeshData {
+            positions: vec![
+                [-0.5, -0.5, 0.0],
+                [0.5, -0.5, 0.0],
+                [0.5, 0.5, 0.0],
+                [-0.5, 0.5, 0.0],
+            ],
+            normals: vec![[0.0, 0.0, 1.0]; 4],
+            uvs: vec![[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            ..MeshData::default()
+        }
+    }
+
+    fn pixel_of(view_proj: &Mat4, point: Vec3) -> (u32, u32) {
+        let clip: [f32; 4] = std::array::from_fn(|row| {
+            (0..4)
+                .map(|column| view_proj[column][row] * if column == 3 { 1.0 } else { point[column] })
+                .sum()
+        });
+        (
+            ((clip[0] / clip[3] * 0.5 + 0.5) * WIDTH as f32) as u32,
+            ((0.5 - clip[1] / clip[3] * 0.5) * HEIGHT as f32) as u32,
+        )
+    }
+
+    /// Renders the panels and returns each one's centre pixel, near first.
+    fn panels(sky: Option<Sky>, fog: Option<HeightFog>, placed: &[(f32, f32)]) -> Vec<[u8; 3]> {
+        let mut renderer = headless();
+        let mesh = renderer.upload_mesh(&panel()).expect("valid");
+        let grey = renderer.create_material(&MaterialDesc {
+            base_color: [0.4, 0.4, 0.4, 1.0],
+            ..MaterialDesc::default()
+        });
+        let view = look_at(EYE, [0.0, 2.0, -1.0], [0.0, 1.0, 0.0]);
+        let projection = perspective(90f32.to_radians(), WIDTH as f32 / HEIGHT as f32, 0.05, 50_000.0);
+        let mut frame = RenderFrame::new(mul(&projection, &view), Color::BLACK);
+        frame.camera_position = EYE;
+        frame.light = frame.light.with_direction([0.3, 0.5, 1.0]);
+        frame.sky = sky;
+        frame.fog = fog;
+        let mut centres = Vec::new();
+        for &(distance, across) in placed {
+            // A tenth of the distance wide: the same size on screen.
+            let size = distance * 0.1;
+            let centre = [distance * across, 2.0, -distance];
+            let mut model = IDENTITY;
+            model[0][0] = size;
+            model[1][1] = size;
+            model[3] = [centre[0], centre[1], centre[2], 1.0];
+            frame.push(DrawCommand {
+                mesh,
+                material: grey,
+                model,
+                normal_matrix: IDENTITY,
+            });
+            centres.push(centre);
+        }
+        let image = renderer.render_to_image(&frame).expect("renders");
+        centres
+            .iter()
+            .map(|&centre| {
+                let (x, y) = pixel_of(&frame.view_proj, centre);
+                let [r, g, b, _] = image.pixel(x, y).expect("in bounds");
+                [r, g, b]
+            })
+            .collect()
+    }
+
+    fn difference(a: [u8; 3], b: [u8; 3]) -> i32 {
+        (0..3)
+            .map(|channel| (i32::from(a[channel]) - i32::from(b[channel])).abs())
+            .sum()
+    }
+
+    #[test]
+    #[ignore = "requires a GPU adapter and driver"]
+    fn a_surface_at_the_camera_sees_no_air() {
+        let thick = HeightFog {
+            density: 0.05,
+            ..HeightFog::default()
+        };
+        let clear = panels(None, None, &[(0.3, 0.0)]);
+        let aired = panels(Some(Sky::default()), Some(thick), &[(0.3, 0.0)]);
+        assert!(
+            difference(clear[0], aired[0]) <= 3,
+            "{:?} against {:?}",
+            clear[0],
+            aired[0]
+        );
+    }
+
+    #[test]
+    #[ignore = "requires a GPU adapter and driver"]
+    fn height_fog_hides_more_the_farther_a_surface_is() {
+        let clear = panels(None, None, &NEAR);
+        let fogged = panels(None, Some(HeightFog::default()), &NEAR);
+        let hidden: Vec<i32> = clear
+            .iter()
+            .zip(&fogged)
+            .map(|(&a, &b)| difference(a, b))
+            .collect();
+        for pair in hidden.windows(2) {
+            assert!(pair[1] > pair[0], "fog grows with distance: {hidden:?}");
+        }
+        assert!(hidden[0] < 5 && hidden[4] > 30, "{hidden:?}");
+    }
+
+    #[test]
+    #[ignore = "requires a GPU adapter and driver"]
+    fn the_atmosphere_turns_distant_surfaces_toward_the_sky() {
+        let sky = Sky {
+            sun_direction: [0.3, 0.5, 1.0],
+            ..Sky::default()
+        };
+        let clear = panels(None, None, &FAR);
+        let aired = panels(Some(sky), None, &FAR);
+        // Grey panels gain the blue of the air between, more with distance.
+        let blueness = |pixel: [u8; 3]| i32::from(pixel[2]) - i32::from(pixel[0]);
+        let shift: Vec<i32> = clear
+            .iter()
+            .zip(&aired)
+            .map(|(&a, &b)| blueness(b) - blueness(a))
+            .collect();
+        for pair in shift.windows(2) {
+            assert!(pair[1] >= pair[0], "the haze deepens with distance: {shift:?}");
+        }
+        assert!(
+            shift[4] > shift[0] + 5,
+            "{shift:?}: clear {clear:?} aired {aired:?}"
+        );
+    }
+}
+
+/// C2 acceptance: a mirror-smooth metal floor shows the sky it reflects.
+#[test]
+#[ignore = "requires a GPU adapter and driver"]
+fn smooth_metal_reflects_the_sky_in_the_mirror_direction() {
+    use crate::{Shading, Sky};
+    let eye: Vec3 = [0.0, 2.0, 2.0 * 3f32.sqrt()];
+    // Seen from 30 degrees above, the floor's centre mirrors the sky 30
+    // degrees up, toward -z. The sun stands behind the camera.
+    let reflected: Vec3 = [0.0, 0.5, -(3f32.sqrt()) / 2.0];
+    let sky = Sky {
+        sun_direction: [0.4, 0.5, 0.77],
+        ..Sky::default()
+    };
+    let projection = perspective(40f32.to_radians(), WIDTH as f32 / HEIGHT as f32, 0.1, 100.0);
+    let centre = |image: &crate::Image| {
+        let [r, g, b, _] = image.pixel(WIDTH / 2, HEIGHT / 2).expect("in bounds");
+        [i32::from(r), i32::from(g), i32::from(b)]
+    };
+
+    let mut renderer = headless();
+    let floor = renderer.upload_mesh(&ground(1.0)).expect("valid");
+    let mirror = renderer.create_material(&MaterialDesc {
+        base_color: [1.0, 1.0, 1.0, 1.0],
+        shading: Shading::Pbr,
+        metallic: 1.0,
+        roughness: 0.05,
+        ..MaterialDesc::default()
+    });
+    let mut frame = RenderFrame::new(
+        mul(&projection, &look_at(eye, [0.0, 0.0, 0.0], [0.0, 1.0, 0.0])),
+        Color::BLACK,
+    );
+    frame.camera_position = eye;
+    frame.light = frame.light.with_direction(sky.sun_direction);
+    frame.sky = Some(sky);
+    frame.push(DrawCommand {
+        mesh: floor,
+        material: mirror,
+        model: IDENTITY,
+        normal_matrix: IDENTITY,
+    });
+    let on_floor = centre(&renderer.render_to_image(&frame).expect("renders"));
+
+    let target = [
+        eye[0] + reflected[0],
+        eye[1] + reflected[1],
+        eye[2] + reflected[2],
+    ];
+    let mut look_up = RenderFrame::new(
+        mul(&projection, &look_at(eye, target, [0.0, 1.0, 0.0])),
+        Color::BLACK,
+    );
+    look_up.camera_position = eye;
+    look_up.light = frame.light;
+    look_up.sky = Some(sky);
+    let in_sky = centre(&renderer.render_to_image(&look_up).expect("renders"));
+
+    assert!(in_sky[2] > in_sky[0] + 10, "a blue afternoon sky: {in_sky:?}");
+    for channel in 0..3 {
+        let error = (on_floor[channel] - in_sky[channel]).abs();
+        assert!(
+            error <= in_sky[channel] / 10 + 3,
+            "floor {on_floor:?} against sky {in_sky:?}"
+        );
+    }
+}
