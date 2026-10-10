@@ -22,9 +22,10 @@
 //! keeps `glam` out of the renderer's signatures (ADR-0008).
 
 pub use renderer::{
-    AdapterInfo, AmbientLight, BackendPreference, Color, DeviceKind, DirectionalLight, DrawCommand,
-    FrameOutcome, FrameStats, GpuPreference, MaterialDesc, MaterialHandle, MeshData, MeshHandle, PassTiming,
-    PresentMode, RenderError, RenderFrame, RendererConfig, ShadowSettings, SkipReason, Sky,
+    AdapterInfo, AmbientLight, AmbientOcclusion, BackendPreference, Color, ContactShadows, DeviceKind,
+    DirectionalLight, DrawCommand, FrameOutcome, FrameStats, GpuPreference, MaterialDesc, MaterialHandle,
+    MeshData, MeshHandle, PassTiming, PresentMode, RenderError, RenderFrame, RendererConfig, ShadowSettings,
+    SkipReason, Sky,
 };
 
 use crate::camera::Camera;
@@ -89,15 +90,23 @@ pub struct ActiveAdapter(pub AdapterInfo);
 
 impl Resource for ActiveAdapter {}
 
-/// The scene's lighting, written into every frame's per-frame uniform block.
+/// The scene's lighting, written into every frame.
 ///
-/// One directional key light plus a flat ambient fill is the whole lighting
+/// One directional key light plus a flat ambient fill was the whole lighting
 /// model for M3: it is what low-poly flat-shaded facets need to read clearly,
 /// and it costs the same on integrated graphics whatever the scene contains.
+/// The screen-space effects of M18 (C4) are opt-in on top of it, so the
+/// default costs exactly what it did.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct SceneLighting {
     pub key: DirectionalLight,
     pub ambient: AmbientLight,
+    /// Ambient occlusion, darkening ambient light in creases and corners.
+    /// `None` (the default) traces none.
+    pub ambient_occlusion: Option<AmbientOcclusion>,
+    /// Contact shadows from the key light, for the small and near shadows
+    /// its cascades miss. `None` (the default) traces none.
+    pub contact_shadows: Option<ContactShadows>,
 }
 
 impl Resource for SceneLighting {}
@@ -367,6 +376,8 @@ impl RenderExtractor {
         frame.view_proj = view_proj;
         frame.camera_position = camera.eye.to_array();
         frame.clear_color = world.resource::<ClearColor>().copied().unwrap_or_default().0;
+        frame.ambient_occlusion = lighting.ambient_occlusion;
+        frame.contact_shadows = lighting.contact_shadows;
         // A time of day drives the key light, the sky and how much ambient
         // the night leaves; without one, the scene's fixed lighting stands
         // and no sky is drawn.
@@ -800,6 +811,11 @@ mod tests {
                 color: [0.1, 0.2, 0.3],
                 intensity: 0.5,
             },
+            ambient_occlusion: Some(renderer::AmbientOcclusion {
+                radius: 0.5,
+                strength: 0.8,
+            }),
+            contact_shadows: Some(renderer::ContactShadows::default()),
         };
         world.insert_resource(lighting);
 
@@ -808,7 +824,21 @@ mod tests {
         assert_eq!(frame.clear_color, Color::rgb(0.2, 0.3, 0.4));
         assert_eq!(frame.light, lighting.key);
         assert_eq!(frame.ambient, lighting.ambient);
+        assert_eq!(frame.ambient_occlusion, lighting.ambient_occlusion);
+        assert_eq!(frame.contact_shadows, lighting.contact_shadows);
         assert_eq!(frame.sky, None, "no time of day, no sky");
+    }
+
+    #[test]
+    fn screen_space_effects_are_opt_in() {
+        let mut world = test_world();
+        world.insert_resource(SceneLighting::default());
+        let frame = extract_render_frame(&world, ASPECT);
+        assert_eq!(
+            frame.ambient_occlusion, None,
+            "a scene pays for occlusion only by asking"
+        );
+        assert_eq!(frame.contact_shadows, None, "and for contact shadows");
     }
 
     #[test]

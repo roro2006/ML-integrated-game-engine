@@ -26,8 +26,8 @@ use engine::input::{FixedInput, FrameInput, KeyCode};
 use engine::math::{Transform, Vec2, Vec3};
 use engine::primitives;
 use engine::render::{
-    ClearColor, Color, MaterialDesc, MaterialHandle, MeshData, MeshHandle, MeshRenderer, RenderAssets,
-    RenderBounds, RenderExtractor, SceneLighting, Visibility,
+    AmbientOcclusion, ClearColor, Color, ContactShadows, MaterialDesc, MaterialHandle, MeshData, MeshHandle,
+    MeshRenderer, RenderAssets, RenderBounds, RenderExtractor, SceneLighting, Visibility,
 };
 use engine::time::{FixedTime, FrameTime};
 use engine::{App, AppConfig, AppControl, EngineError, FixedStage, FrameStage};
@@ -212,6 +212,17 @@ fn add_overlay_logging(app: &mut App) -> Result<(), EngineError> {
     Ok(())
 }
 
+/// The game's lighting: the engine's key and ambient light, with ambient
+/// occlusion and contact shadows on, so props sit in their creases and on
+/// the ground rather than float above it.
+fn scene_lighting() -> SceneLighting {
+    SceneLighting {
+        ambient_occlusion: Some(AmbientOcclusion::default()),
+        contact_shadows: Some(ContactShadows::default()),
+        ..SceneLighting::default()
+    }
+}
+
 fn build_app(renderer: engine::render::RendererConfig) -> Result<App, EngineError> {
     let mut app = App::new(AppConfig {
         app_id: APP_ID.to_owned(),
@@ -224,7 +235,7 @@ fn build_app(renderer: engine::render::RendererConfig) -> Result<App, EngineErro
         let world = app.world_mut();
         world.insert_resource(Camera::default());
         world.insert_resource(FollowCamera::default());
-        world.insert_resource(SceneLighting::default());
+        world.insert_resource(scene_lighting());
         world.insert_resource(RenderExtractor::new());
         world.insert_resource(DebugDraw::new());
         world.insert_resource(DebugOverlay::default());
@@ -345,7 +356,7 @@ fn build_slice_app(renderer: engine::render::RendererConfig) -> Result<App, Engi
         let world = app.world_mut();
         world.insert_resource(Camera::default());
         world.insert_resource(FollowCamera::default());
-        world.insert_resource(SceneLighting::default());
+        world.insert_resource(scene_lighting());
         world.insert_resource(RenderExtractor::new());
         world.insert_resource(DebugDraw::new());
         world.insert_resource(DebugOverlay::default());
