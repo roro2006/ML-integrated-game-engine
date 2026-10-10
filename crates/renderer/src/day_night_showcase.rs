@@ -385,6 +385,38 @@ fn every_moment_is_lit_from_above_and_the_lamps_stand_over_the_ground() {
     }
 }
 
+/// Renders the showcase for a person to look at: each moment at 1280x720,
+/// with every pass on and again with ambient occlusion and contact shadows
+/// off, so the two effects can be compared. Set SHOWCASE_TO to a directory
+/// to keep the images (raw RGBA behind the golden header); without it the
+/// test only checks that the frames render.
+#[test]
+#[ignore = "requires a GPU adapter and driver"]
+fn the_day_night_showcase_renders_for_review() {
+    let (width, height) = (1280, 720);
+    let out = std::env::var_os("SHOWCASE_TO").map(std::path::PathBuf::from);
+    if let Some(dir) = &out {
+        std::fs::create_dir_all(dir).expect("writable");
+    }
+    for moment in Moment::ALL {
+        let (mut renderer, mut frame, full) = settled(moment, width, height);
+        frame.ambient_occlusion = None;
+        frame.contact_shadows = None;
+        renderer.render_to_image(&frame).expect("renders");
+        let plain = renderer.render_to_image(&frame).expect("renders");
+        assert_ne!(
+            full.rgba8, plain.rgba8,
+            "{moment:?}: the screen-space effects show"
+        );
+        if let Some(dir) = &out {
+            for (suffix, image) in [("", &full), ("_no_ao_contact", &plain)] {
+                let path = dir.join(format!("day_night_{}{suffix}.rgba", moment.name()));
+                std::fs::write(path, golden::encode(image)).expect("writable");
+            }
+        }
+    }
+}
+
 /// The phase 2 golden set. References are captured on the RX 7900 XT with
 /// `UPDATE_GOLDEN=1`; the advisory lavapipe CI job runs this test with a
 /// tolerance (`GOLDEN_TOLERANCE`) and keeps what it rendered.
