@@ -1318,9 +1318,8 @@ Open after ADR-0019 to ADR-0022:
 ## 17. Immediate next tasks
 
 1. M17 is complete (B1, B2, B3, B4, B7, E1). Next renderer work is phase 2 per docs/plans/10-renderer-workstream.md; C5 brings point and spot lights onto the clustered culling prototyped in B2 (ADR-0024).
-2. Fix the pre-existing `sample_game` test `the_quest_runs_from_sela_to_its_resolution`, which expects 450 experience and finds 535.
-3. Capture reference frames with Frame Generation off, and collect RGP timings per pass on the RX 7900 XT, following `docs/reference/capture-plan.md`.
-4. Run a gameplay design pass for F4 (building) and F6 (gathering, crafting, survival), following section 3 of `docs/plans/20-gameplay-workstream.md`.
+2. Capture reference frames with Frame Generation off, and collect RGP timings per pass on the RX 7900 XT, following `docs/reference/capture-plan.md`.
+3. Run a gameplay design pass for F4 (building) and F6 (gathering, crafting, survival), following section 3 of `docs/plans/20-gameplay-workstream.md`.
 
 ## 18. Documentation map
 

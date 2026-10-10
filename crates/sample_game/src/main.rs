@@ -4417,6 +4417,16 @@ mod tests {
                 .map(|(_, transform, _)| transform.translation)
                 .expect("the warden is back on her post");
             stand_at(&mut app, sela);
+            // The ambush already paid kill experience (ADR-0018), so the
+            // reward is what the report itself adds.
+            let experience_before_report = app
+                .world()
+                .resource::<slice::Slice>()
+                .expect("slice exists")
+                .state
+                .player
+                .progression
+                .experience;
             converse(&mut app);
 
             let slice = app.world().resource::<slice::Slice>().expect("slice exists");
@@ -4428,7 +4438,8 @@ mod tests {
                 "the quest records which ending occurred, not merely that it ended"
             );
             assert_eq!(
-                slice.state.player.progression.experience, 450,
+                slice.state.player.progression.experience - experience_before_report,
+                450,
                 "and pays the reward package"
             );
             assert_eq!(
