@@ -240,15 +240,6 @@ pub(crate) fn create_draw_resources(
     (buffer, bind_group)
 }
 
-/// Whether a set of changed shader names means the lit pipeline is stale.
-///
-/// Separated from the rebuild itself so the decision can be tested without a
-/// device, and so an edit to an unrelated shader cannot trigger a needless
-/// rebuild once this crate owns more than one pipeline.
-pub(crate) fn lit_shader_changed(changed: &[String]) -> bool {
-    changed.iter().any(|name| name == LIT)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,17 +276,6 @@ mod tests {
         assert_eq!(depth_size(0, 720), None, "a minimized window must not build one");
         assert_eq!(depth_size(1280, 0), None);
         assert_eq!(depth_size(0, 0), None);
-    }
-
-    #[test]
-    fn only_an_edit_to_the_lit_shader_rebuilds_the_lit_pipeline() {
-        assert!(!lit_shader_changed(&[]));
-        assert!(lit_shader_changed(&[LIT.to_owned()]));
-        assert!(lit_shader_changed(&["other.wgsl".to_owned(), LIT.to_owned()]));
-        assert!(
-            !lit_shader_changed(&["debug-lines.wgsl".to_owned()]),
-            "an unrelated shader must not rebuild this pipeline"
-        );
     }
 
     #[test]

@@ -213,14 +213,6 @@ pub(crate) fn create_pipeline(
     }
 }
 
-/// Whether a set of changed shader names means the debug pipeline is stale.
-///
-/// The mirror of `pipeline::lit_shader_changed`: an edit to one shader must not
-/// rebuild the other's pipeline.
-pub(crate) fn debug_shader_changed(changed: &[String]) -> bool {
-    changed.iter().any(|name| name == DEBUG_LINE)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,16 +323,6 @@ mod tests {
             assert_eq!(size % 4, 0, "capacity {capacity} produces an unaligned buffer");
             assert!(size > 0, "a zero-sized buffer is a validation error");
         }
-    }
-
-    #[test]
-    fn only_an_edit_to_the_debug_shader_rebuilds_the_debug_pipeline() {
-        assert!(!debug_shader_changed(&[]));
-        assert!(debug_shader_changed(&[DEBUG_LINE.to_owned()]));
-        assert!(
-            !debug_shader_changed(&[crate::shaders::LIT.to_owned()]),
-            "an edit to the lit shader must not rebuild this pipeline"
-        );
     }
 
     /// The claims that need a driver: that `LineList` with depth-test-on,

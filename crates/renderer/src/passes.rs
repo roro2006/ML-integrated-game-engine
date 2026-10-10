@@ -87,7 +87,8 @@ impl Renderer {
         frame: &RenderFrame,
         plan: &DrawPlan,
         debug_vertices: Option<u32>,
-    ) -> Result<wgpu::CommandBuffer, RenderError> {
+        timing: &mut Option<crate::gpu_timing::GpuTimer>,
+    ) -> Result<(wgpu::CommandBuffer, String), RenderError> {
         let (width, height) = self.size;
         let mut graph: RenderGraph<'_, PassContext> = RenderGraph::default();
         let surface = graph.import("surface");
@@ -149,8 +150,25 @@ impl Renderer {
                 label: Some("frame-encoder"),
             });
         let mut context = PassContext { encoder, views };
-        compiled.execute(&mut context).map_err(graph_error)?;
-        Ok(context.encoder.finish())
+        let graph_dump = compiled.dump();
+        let queries = timing
+            .as_mut()
+            .and_then(|timer| timer.start(compiled.pass_names().collect()));
+        compiled
+            .execute_profiled(&mut context, |context, index, begin| {
+                if let (Some(queries), Some((start, end))) =
+                    (&queries, crate::gpu_timing::query_indices(index as u32))
+                {
+                    context
+                        .encoder
+                        .write_timestamp(queries, if begin { start } else { end });
+                }
+            })
+            .map_err(graph_error)?;
+        if let Some(timer) = timing {
+            timer.resolve(&mut context.encoder);
+        }
+        Ok((context.encoder.finish(), graph_dump))
     }
 
     fn lit_pass(

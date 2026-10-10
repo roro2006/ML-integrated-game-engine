@@ -251,14 +251,12 @@ impl<C> CompiledGraph<'_, C> {
     }
 
     /// Pass names in execution order.
-    #[cfg(test)]
     pub(crate) fn pass_names(&self) -> impl Iterator<Item = &'static str> + '_ {
         self.passes.iter().map(|pass| pass.name)
     }
 
     /// A stable text description of the graph: passes in order with what they
     /// read and write, then each resource with its lifetime.
-    #[cfg(test)]
     pub(crate) fn dump(&self) -> String {
         use std::fmt::Write as _;
 
@@ -298,12 +296,24 @@ impl<C> CompiledGraph<'_, C> {
     }
 
     /// Runs every pass in order, stopping at the first that fails.
+    #[cfg(test)]
     pub(crate) fn execute(self, context: &mut C) -> Result<(), GraphError> {
-        for pass in self.passes {
+        self.execute_profiled(context, |_, _, _| {})
+    }
+
+    /// Calls a hook before and after each pass, including compute passes.
+    pub(crate) fn execute_profiled(
+        self,
+        context: &mut C,
+        mut boundary: impl FnMut(&mut C, usize, bool),
+    ) -> Result<(), GraphError> {
+        for (index, pass) in self.passes.into_iter().enumerate() {
+            boundary(context, index, true);
             (pass.execute)(context).map_err(|message| GraphError::Pass {
                 pass: pass.name,
                 message,
             })?;
+            boundary(context, index, false);
         }
         Ok(())
     }

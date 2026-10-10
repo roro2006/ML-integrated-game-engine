@@ -23,8 +23,8 @@
 
 pub use renderer::{
     AdapterInfo, AmbientLight, BackendPreference, Color, DeviceKind, DirectionalLight, DrawCommand,
-    FrameOutcome, FrameStats, GpuPreference, MaterialDesc, MaterialHandle, MeshData, MeshHandle, PresentMode,
-    RenderError, RenderFrame, RendererConfig, SkipReason,
+    FrameOutcome, FrameStats, GpuPreference, MaterialDesc, MaterialHandle, MeshData, MeshHandle, PassTiming,
+    PresentMode, RenderError, RenderFrame, RendererConfig, SkipReason,
 };
 
 use crate::camera::Camera;

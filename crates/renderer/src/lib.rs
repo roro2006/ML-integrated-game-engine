@@ -27,6 +27,8 @@ mod debug_lines;
 mod frame;
 #[cfg(test)]
 mod golden;
+mod gpu_timing;
+pub use gpu_timing::PassTiming;
 mod graph;
 mod image;
 mod material;
@@ -180,7 +182,7 @@ pub struct GpuFeatures {
 ///
 /// Only what something uses or reports: a feature can change which driver
 /// paths are taken, so texture binding arrays wait for the bindless path.
-const OPTIONAL_FEATURES: wgpu::Features = wgpu::Features::TEXTURE_COMPRESSION_BC;
+const OPTIONAL_FEATURES: wgpu::Features = wgpu::Features::TEXTURE_COMPRESSION_BC.union(gpu_timing::FEATURES);
 
 impl GpuFeatures {
     fn from_wgpu(features: wgpu::Features) -> Self {
@@ -241,8 +243,12 @@ impl fmt::Display for RenderError {
 impl std::error::Error for RenderError {}
 
 /// Per-frame counters for the performance overlay.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FrameStats {
+    /// Delayed GPU readings; absent before readback or without timestamp support.
+    pub gpu_passes: Option<Vec<PassTiming>>,
+    /// Frame associated with the GPU readings, which lag the CPU counters.
+    pub gpu_frame: Option<u64>,
     pub draw_calls: u32,
     /// Triangles submitted this frame, after engine-side culling.
     pub triangles: u32,
@@ -270,7 +276,7 @@ pub enum SkipReason {
     SurfaceReconfigured,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum FrameOutcome {
     Presented(FrameStats),
     Skipped(SkipReason),
@@ -301,6 +307,17 @@ enum Output {
     Offscreen { texture: Option<wgpu::Texture> },
 }
 
+/// Staged pipelines are installed only after their whole shader family compiles.
+enum BuiltShader {
+    Lit(wgpu::RenderPipeline),
+    Debug(wgpu::RenderPipeline),
+    Tonemap(wgpu::RenderPipeline),
+    Pbr(BTreeMap<permutation::PermutationKey, wgpu::RenderPipeline>),
+    Bloom(post::bloom::BloomResources),
+    Exposure(post::exposure::ExposureResources),
+    Mips(texture::MipGenerator),
+}
+
 /// Owns the GPU device, queue, and output (a window's swapchain or an
 /// offscreen texture).
 #[derive(Debug)]
@@ -327,6 +344,8 @@ pub struct Renderer {
     /// Textures the render graph allocates per frame, the depth buffer among
     /// them.
     transients: TexturePool<wgpu::Texture>,
+    gpu_timer: Option<gpu_timing::GpuTimer>,
+    graph_dump: String,
 
     meshes: Registry<MeshHandle, GpuMesh>,
     materials: Registry<MaterialHandle, GpuMaterial>,
@@ -597,6 +616,7 @@ impl Renderer {
             }
         };
 
+        let gpu_timer = gpu_timing::GpuTimer::new(&device, &queue);
         let mut renderer = Self {
             device,
             queue,
@@ -611,6 +631,8 @@ impl Renderer {
             shader_error: None,
             shader_failures: BTreeMap::new(),
             transients: TexturePool::default(),
+            gpu_timer,
+            graph_dump: String::new(),
             meshes: Registry::default(),
             materials: Registry::default(),
             globals_buffer,
@@ -848,23 +870,25 @@ impl Renderer {
     /// and the sources are embedded (ADR-0011). An error leaves the current
     /// pipeline in place.
     pub fn enable_shader_hot_reload(&mut self, shader_dir: PathBuf) -> Result<(), RenderError> {
-        self.shaders = ShaderLibrary::new(Some(shader_dir));
-        // Every pipeline is rebuilt before any is installed, so a directory
-        // holding one good shader and one broken one leaves the renderer on the
-        // set that already works instead of a mismatched half.
-        let pipeline = self.build_lit_pipeline()?;
-        let debug_pipeline = self.build_debug_pipeline()?;
-        let tonemap_pipeline = build_tonemap_pipeline(
-            &self.device,
-            &mut self.shaders,
-            &self.tonemap_pipeline_layout,
-            self.color_format,
-        )?;
-        let pbr_pipelines = build_pbr_pipelines(&self.device, &mut self.shaders, &self.pbr_pipeline_layout)?;
-        self.pipeline = pipeline;
-        self.debug_pipeline = debug_pipeline;
-        self.tonemap_pipeline = tonemap_pipeline;
-        self.pbr_pipelines = pbr_pipelines;
+        if !cfg!(debug_assertions) {
+            return Ok(());
+        }
+        let previous = std::mem::replace(&mut self.shaders, ShaderLibrary::new(Some(shader_dir)));
+        let mut staged = Vec::new();
+        for &(name, family) in shaders::PIPELINES {
+            match self.build_shader_family(family) {
+                Ok(pipelines) => staged.push(pipelines),
+                Err(error) => {
+                    self.shaders = previous;
+                    self.shader_failures.insert(name, error.to_string());
+                    self.refresh_shader_error();
+                    return Err(error);
+                }
+            }
+        }
+        for pipelines in staged {
+            self.install_shader_family(pipelines);
+        }
         self.shader_failures.clear();
         self.shader_error = None;
         Ok(())
@@ -875,6 +899,11 @@ impl Renderer {
     /// Returned rather than logged so the engine layer owns diagnostics output.
     pub fn shader_error(&self) -> Option<&str> {
         self.shader_error.as_deref()
+    }
+
+    /// Failures keyed by the shader whose previous pipelines remain installed.
+    pub fn shader_errors(&self) -> &BTreeMap<&'static str, String> {
+        &self.shader_failures
     }
 
     /// Draws skipped in the last frame because their mesh or material handle
@@ -934,68 +963,94 @@ impl Renderer {
     /// an edit to one cannot disturb the other.
     fn reload_shaders_if_changed(&mut self) {
         let changed = self.shaders.changed();
-        if changed.is_empty() {
-            return;
-        }
-        if pipeline::lit_shader_changed(&changed) {
-            let rebuilt = self.build_lit_pipeline();
-            if let Some(pipeline) = self.record_rebuild(shaders::LIT, rebuilt) {
-                self.pipeline = pipeline;
-            }
-        }
-        if debug_lines::debug_shader_changed(&changed) {
-            let rebuilt = self.build_debug_pipeline();
-            if let Some(pipeline) = self.record_rebuild(shaders::DEBUG_LINE, rebuilt) {
-                self.debug_pipeline = pipeline;
-            }
-        }
-        // `changed` names pbr_lit.wgsl when it or brdf.wgsl changed.
-        if changed.iter().any(|name| name == shaders::PBR_LIT) {
-            let rebuilt = build_pbr_pipelines(&self.device, &mut self.shaders, &self.pbr_pipeline_layout);
-            match rebuilt {
+        for (name, family) in shaders::affected_pipelines(&changed) {
+            match self.build_shader_family(family) {
                 Ok(pipelines) => {
-                    self.pbr_pipelines = pipelines;
-                    self.shader_failures.remove(shaders::PBR_LIT);
+                    self.install_shader_family(pipelines);
+                    self.shader_failures.remove(name);
                 }
                 Err(error) => {
-                    self.shader_failures.insert(shaders::PBR_LIT, error.to_string());
+                    self.shader_failures.insert(name, error.to_string());
                 }
             }
-            self.refresh_shader_error();
         }
-        // `changed` names the tonemap shader when it or `colour.wgsl` changed.
-        if changed.iter().any(|name| name == shaders::TONEMAP) {
-            let rebuilt = build_tonemap_pipeline(
+        self.refresh_shader_error();
+    }
+
+    fn build_shader_family(&mut self, family: shaders::PipelineFamily) -> Result<BuiltShader, RenderError> {
+        use shaders::PipelineFamily;
+        Ok(match family {
+            PipelineFamily::Lit => BuiltShader::Lit(self.build_lit_pipeline()?),
+            PipelineFamily::Debug => BuiltShader::Debug(self.build_debug_pipeline()?),
+            PipelineFamily::Tonemap => BuiltShader::Tonemap(build_tonemap_pipeline(
                 &self.device,
                 &mut self.shaders,
                 &self.tonemap_pipeline_layout,
                 self.color_format,
-            );
-            if let Some(pipeline) = self.record_rebuild(shaders::TONEMAP, rebuilt) {
-                self.tonemap_pipeline = pipeline;
+            )?),
+            PipelineFamily::Pbr => BuiltShader::Pbr(build_pbr_pipelines(
+                &self.device,
+                &mut self.shaders,
+                &self.pbr_pipeline_layout,
+            )?),
+            PipelineFamily::Bloom => {
+                let source = self
+                    .shaders
+                    .expanded(shaders::BLOOM)
+                    .map_err(RenderError::Shader)?;
+                BuiltShader::Bloom(
+                    post::bloom::BloomResources::new(&self.device, &source.text).map_err(|message| {
+                        RenderError::ShaderCompile {
+                            shader: shaders::BLOOM.into(),
+                            message: source.annotate(&message),
+                        }
+                    })?,
+                )
             }
-        }
+            PipelineFamily::Exposure => {
+                let source = self
+                    .shaders
+                    .expanded(shaders::EXPOSURE_HISTOGRAM)
+                    .map_err(RenderError::Shader)?;
+                BuiltShader::Exposure(
+                    post::exposure::ExposureResources::new(&self.device, &source.text).map_err(
+                        |message| RenderError::ShaderCompile {
+                            shader: shaders::EXPOSURE_HISTOGRAM.into(),
+                            message: source.annotate(&message),
+                        },
+                    )?,
+                )
+            }
+            PipelineFamily::Mips => {
+                let source = self
+                    .shaders
+                    .expanded(shaders::MIP_DOWNSAMPLE)
+                    .map_err(RenderError::Shader)?;
+                BuiltShader::Mips(texture::MipGenerator::new(&self.device, &source.text).map_err(
+                    |message| RenderError::ShaderCompile {
+                        shader: shaders::MIP_DOWNSAMPLE.into(),
+                        message: source.annotate(&message),
+                    },
+                )?)
+            }
+        })
     }
 
-    /// Records how a hot-reload rebuild went and returns the pipeline to
-    /// install, if it built.
-    fn record_rebuild(
-        &mut self,
-        shader: &'static str,
-        rebuilt: Result<wgpu::RenderPipeline, RenderError>,
-    ) -> Option<wgpu::RenderPipeline> {
-        let pipeline = match rebuilt {
-            Ok(pipeline) => {
-                self.shader_failures.remove(shader);
-                Some(pipeline)
+    fn install_shader_family(&mut self, built: BuiltShader) {
+        match built {
+            BuiltShader::Lit(pipeline) => self.pipeline = pipeline,
+            BuiltShader::Debug(pipeline) => self.debug_pipeline = pipeline,
+            BuiltShader::Tonemap(pipeline) => self.tonemap_pipeline = pipeline,
+            BuiltShader::Pbr(pipelines) => self.pbr_pipelines = pipelines,
+            BuiltShader::Bloom(resources) => self.bloom = resources,
+            BuiltShader::Exposure(resources) => {
+                // Preserve adapted luminance and the uniform the tonemap reads.
+                self.exposure.layout = resources.layout;
+                self.exposure.build = resources.build;
+                self.exposure.average = resources.average;
             }
-            Err(error) => {
-                self.shader_failures.insert(shader, error.to_string());
-                None
-            }
-        };
-        self.refresh_shader_error();
-        pipeline
+            BuiltShader::Mips(generator) => self.mips = generator,
+        }
     }
 
     fn refresh_shader_error(&mut self) {
@@ -1076,11 +1131,24 @@ impl Renderer {
         })
     }
 
+    /// GPU time per graph pass from the latest completed readback, which lags
+    /// the CPU by a few frames. `None` without timestamp support or before the
+    /// first readback.
+    pub fn gpu_timings(&self) -> Option<&[PassTiming]> {
+        self.gpu_timer.as_ref().and_then(gpu_timing::GpuTimer::latest)
+    }
+
+    /// Pass order, resource dependencies and lifetimes from the last graph.
+    pub fn graph_dump(&self) -> &str {
+        &self.graph_dump
+    }
+
     /// Renders one submitted frame.
     ///
     /// This is the entry point the engine calls. The frame arrives already
     /// culled and ordered; the backend writes the uniforms and records the
-    /// draws in exactly the order given.
+    /// draws in exactly the order given. Where timestamps are supported, the
+    /// frame's per-pass GPU times are queued for a later, non-blocking read.
     pub fn render(&mut self, frame: &RenderFrame) -> Result<FrameOutcome, RenderError> {
         if self.size.0 == 0 || self.size.1 == 0 {
             return Ok(FrameOutcome::Skipped(SkipReason::ZeroSizedSurface));
@@ -1157,12 +1225,39 @@ impl Renderer {
         // The pool is moved out while the graph borrows `self` for its passes,
         // and put back whatever happens.
         let mut transients = std::mem::take(&mut self.transients);
-        let commands = self.record_frame(&mut transients, target.view(), frame, &plan, debug_vertices);
+        let mut timer = self.gpu_timer.take();
+        if let Some(timer) = &mut timer {
+            timer.begin_frame(&self.device);
+        }
+        let commands = self.record_frame(
+            &mut transients,
+            target.view(),
+            frame,
+            &plan,
+            debug_vertices,
+            &mut timer,
+        );
         self.transients = transients;
-        self.queue.submit(std::iter::once(commands?));
+        if commands.is_err()
+            && let Some(timer) = &mut timer
+        {
+            timer.cancel();
+        }
+        self.gpu_timer = timer;
+        let (commands, dump) = commands?;
+        self.queue.submit(std::iter::once(commands));
+        self.graph_dump = dump;
+        if let Some(timer) = &mut self.gpu_timer {
+            timer.submitted();
+        }
         self.finish(target, suboptimal);
 
         Ok(FrameOutcome::Presented(FrameStats {
+            gpu_passes: self.gpu_timings().map(<[PassTiming]>::to_vec),
+            gpu_frame: self
+                .gpu_timer
+                .as_ref()
+                .and_then(gpu_timing::GpuTimer::latest_frame),
             draw_calls: draw_count,
             triangles: plan.triangles,
             cpu_time: started.elapsed(),
@@ -1222,6 +1317,8 @@ impl Renderer {
         self.finish(target, suboptimal);
 
         Ok(FrameOutcome::Presented(FrameStats {
+            gpu_passes: None,
+            gpu_frame: None,
             draw_calls: 0,
             triangles: 0,
             cpu_time: started.elapsed(),
@@ -1515,6 +1612,52 @@ fn select_present_mode(preference: PresentMode, supported: &[wgpu::PresentMode])
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[ignore = "requires a GPU adapter"]
+    fn hot_reload_keeps_failures_separate_and_recovers_every_family() {
+        let mut renderer = Renderer::headless(8, 8, RendererConfig::default()).expect("adapter");
+        let dir = std::env::temp_dir().join(format!(
+            "renderer-reload-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/shaders");
+        for file in std::fs::read_dir(assets).unwrap() {
+            let file = file.unwrap();
+            if file
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "wgsl")
+            {
+                std::fs::copy(file.path(), dir.join(file.file_name())).unwrap();
+            }
+        }
+        renderer.enable_shader_hot_reload(dir.clone()).unwrap();
+        let mut embedded = ShaderLibrary::new(None);
+        // Each family fails without disturbing other errors, then repairs independently.
+        for &(name, _) in shaders::PIPELINES {
+            std::fs::write(dir.join(name), "this is invalid WGSL").unwrap();
+        }
+        renderer.reload_shaders_if_changed();
+        assert_eq!(renderer.shader_errors().len(), shaders::PIPELINES.len());
+        for (index, &(name, _)) in shaders::PIPELINES.iter().enumerate() {
+            std::fs::write(dir.join(name), embedded.source(name).unwrap().as_bytes()).unwrap();
+            renderer.reload_shaders_if_changed();
+            assert!(!renderer.shader_errors().contains_key(name));
+            assert_eq!(
+                renderer.shader_errors().len(),
+                shaders::PIPELINES.len() - index - 1
+            );
+        }
+        assert!(renderer.shader_error().is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn vsync_always_picks_fifo() {

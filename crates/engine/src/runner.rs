@@ -275,6 +275,8 @@ impl PlatformHandler for Runner {
                         diagnostics.draw_calls = stats.draw_calls;
                         diagnostics.triangles = stats.triangles;
                         diagnostics.render_cpu_time = stats.cpu_time;
+                        diagnostics.gpu_passes = renderer.gpu_timings().map(<[_]>::to_vec);
+                        diagnostics.render_graph = renderer.graph_dump().to_owned();
                     }
                 }
                 Ok(FrameOutcome::Skipped(reason)) => {

@@ -126,6 +126,34 @@ pub fn rows(diagnostics: &FrameDiagnostics, world: Option<&WorldMetrics>, budget
         // 40 ms spike in it is a stutter the player feels and the mean hides.
         Row::judged("frame max", millis(worst), worst > budget.frame_time),
         Row::ok("render cpu", millis(diagnostics.render_cpu_time)),
+        Row::ok(
+            "gpu passes",
+            diagnostics.gpu_passes.as_ref().map_or_else(
+                || "unavailable".to_owned(),
+                |passes| {
+                    passes
+                        .iter()
+                        .map(|pass| {
+                            format!(
+                                "{}: {}",
+                                pass.name,
+                                pass.gpu_ms
+                                    .map_or_else(|| "unavailable".to_owned(), |ms| format!("{ms:.3} ms"))
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                },
+            ),
+        ),
+        Row::ok(
+            "render graph",
+            if diagnostics.render_graph.is_empty() {
+                "unavailable".to_owned()
+            } else {
+                diagnostics.render_graph.clone()
+            },
+        ),
         Row::judged(
             "draw calls",
             diagnostics.draw_calls.to_string(),
@@ -299,6 +327,8 @@ mod tests {
                 "frame avg",
                 "frame max",
                 "render cpu",
+                "gpu passes",
+                "render graph",
                 "draw calls",
                 "triangles",
                 "frames",
@@ -327,5 +357,29 @@ mod tests {
         let rows = rows(&FrameDiagnostics::default(), None, &Budget::default());
         assert_eq!(row(&rows, "fps").value, "0.0");
         assert!(!over_budget(&rows));
+    }
+
+    #[test]
+    fn gpu_measurements_and_graph_are_visible_without_inventing_missing_times() {
+        let mut stats = FrameDiagnostics::default();
+        let unavailable = rows(&stats, None, &Budget::default());
+        assert_eq!(row(&unavailable, "gpu passes").value, "unavailable");
+        stats.gpu_passes = Some(vec![
+            engine::render::PassTiming {
+                name: "lit",
+                gpu_ms: Some(1.25),
+            },
+            engine::render::PassTiming {
+                name: "tonemap",
+                gpu_ms: None,
+            },
+        ]);
+        stats.render_graph = "0: lit -> hdr\n1: tonemap -> surface".to_owned();
+        let measured = rows(&stats, None, &Budget::default());
+        assert_eq!(
+            row(&measured, "gpu passes").value,
+            "lit: 1.250 ms, tonemap: unavailable"
+        );
+        assert_eq!(row(&measured, "render graph").value, stats.render_graph);
     }
 }

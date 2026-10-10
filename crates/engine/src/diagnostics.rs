@@ -229,6 +229,10 @@ pub struct FrameDiagnostics {
     pub triangles: u32,
     /// CPU time spent in the renderer in the most recent frame.
     pub render_cpu_time: Duration,
+    /// Latest completed GPU sample; unavailable timestamps are never reported as zero.
+    pub gpu_passes: Option<Vec<crate::render::PassTiming>>,
+    /// Resources and execution order of the most recently recorded render graph.
+    pub render_graph: String,
 }
 
 impl Resource for FrameDiagnostics {}

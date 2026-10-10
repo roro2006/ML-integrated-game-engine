@@ -48,6 +48,37 @@ pub(crate) const MIP_DOWNSAMPLE: &str = "mip_downsample.wgsl";
 /// Shared colour maths: tonemapping curves. Included, never compiled alone.
 pub(crate) const COLOUR: &str = "colour.wgsl";
 
+/// One atomic family of pipelines built from an entry-point shader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PipelineFamily {
+    Lit,
+    Debug,
+    Tonemap,
+    Pbr,
+    Bloom,
+    Exposure,
+    Mips,
+}
+
+/// Includes are tracked by `ShaderLibrary`; this table owns rebuild routing.
+pub(crate) const PIPELINES: &[(&str, PipelineFamily)] = &[
+    (LIT, PipelineFamily::Lit),
+    (DEBUG_LINE, PipelineFamily::Debug),
+    (TONEMAP, PipelineFamily::Tonemap),
+    (PBR_LIT, PipelineFamily::Pbr),
+    (BLOOM, PipelineFamily::Bloom),
+    (EXPOSURE_HISTOGRAM, PipelineFamily::Exposure),
+    (MIP_DOWNSAMPLE, PipelineFamily::Mips),
+];
+
+pub(crate) fn affected_pipelines(changed: &[String]) -> Vec<(&'static str, PipelineFamily)> {
+    PIPELINES
+        .iter()
+        .copied()
+        .filter(|(name, _)| changed.iter().any(|edit| edit == name))
+        .collect()
+}
+
 macro_rules! shader_file {
     ($name:literal) => {
         include_str!(concat!(
@@ -270,6 +301,7 @@ pub struct ShaderLibrary {
     /// The last source successfully read from disk, per file name. Used to
     /// detect edits; ordered so `changed` reports names deterministically.
     loaded: BTreeMap<String, String>,
+    unreadable: BTreeSet<String>,
     /// For each shader returned by `source`, every file it was built from.
     dependencies: BTreeMap<String, Vec<String>>,
 }
@@ -281,6 +313,7 @@ impl ShaderLibrary {
         Self {
             shader_dir: if cfg!(debug_assertions) { shader_dir } else { None },
             loaded: BTreeMap::new(),
+            unreadable: BTreeSet::new(),
             dependencies: BTreeMap::new(),
         }
     }
@@ -339,27 +372,29 @@ impl ShaderLibrary {
     /// pipeline rebuild. These files are a few kilobytes and this only runs in
     /// debug builds.
     ///
-    /// A file that has become unreadable is not reported: the caller keeps the
-    /// pipeline it has, and the next [`source`] call surfaces the error.
+    /// Unreadable files report once, then again when restored, even if their
+    /// restored content is identical to the last successful read.
     ///
     /// [`source`]: Self::source
     pub fn changed(&mut self) -> Vec<String> {
         let Some(dir) = &self.shader_dir else {
             return Vec::new();
         };
-        let edits: Vec<(String, String)> = self
-            .loaded
-            .iter()
-            .filter_map(|(name, loaded)| match fs::read_to_string(dir.join(name)) {
-                Ok(source) if &source != loaded => Some((name.clone(), source)),
-                _ => None,
-            })
-            .collect();
-
         let mut edited = BTreeSet::new();
-        for (name, source) in edits {
-            self.loaded.insert(name.clone(), source);
-            edited.insert(name);
+        for (name, loaded) in &mut self.loaded {
+            match fs::read_to_string(dir.join(name)) {
+                Ok(source) => {
+                    if self.unreadable.remove(name) || source != *loaded {
+                        *loaded = source;
+                        edited.insert(name.clone());
+                    }
+                }
+                Err(_) => {
+                    if self.unreadable.insert(name.clone()) {
+                        edited.insert(name.clone());
+                    }
+                }
+            }
         }
         self.dependencies
             .iter()
@@ -374,6 +409,45 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn edits_rebuild_only_registered_pipeline_families() {
+        assert!(affected_pipelines(&[]).is_empty());
+        assert!(affected_pipelines(&["unrelated.wgsl".into()]).is_empty());
+        for &(name, family) in PIPELINES {
+            assert_eq!(
+                affected_pipelines(&[name.into(), name.into()]),
+                vec![(name, family)]
+            );
+        }
+        assert_eq!(
+            affected_pipelines(&[DEBUG_LINE.into(), LIT.into()]),
+            vec![(LIT, PipelineFamily::Lit), (DEBUG_LINE, PipelineFamily::Debug)]
+        );
+    }
+
+    #[test]
+    fn every_embedded_shader_validates_with_naga() {
+        let mut library = ShaderLibrary::new(None);
+        for &(name, _) in EMBEDDED {
+            let source = library.expanded(name).expect("embedded includes resolve");
+            let module = wgpu::naga::front::wgsl::parse_str(&source.text)
+                .unwrap_or_else(|error| panic!("{name}: {}", error.emit_to_string(&source.text)));
+            wgpu::naga::valid::Validator::new(
+                wgpu::naga::valid::ValidationFlags::all(),
+                wgpu::naga::valid::Capabilities::all(),
+            )
+            .validate(&module)
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
+            if !module.entry_points.is_empty() {
+                assert_eq!(
+                    PIPELINES.iter().filter(|(shader, _)| *shader == name).count(),
+                    1,
+                    "each entry-point shader has exactly one rebuild registration: {name}"
+                );
+            }
+        }
+    }
 
     /// A unique directory under the system temp dir, removed on drop. Avoids a
     /// `tempfile` dependency for what is a handful of test files.
@@ -690,7 +764,7 @@ mod tests {
         }
 
         #[test]
-        fn changed_ignores_shaders_that_were_never_loaded_or_became_unreadable() {
+        fn changed_ignores_unloaded_shaders_but_reports_deletion_and_restoration() {
             let dir = TempDir::new();
             dir.write(LIT, "// first\n");
             let mut library = ShaderLibrary::new(Some(dir.0.clone()));
@@ -699,9 +773,14 @@ mod tests {
             assert!(library.changed().is_empty());
 
             library.source(LIT).expect("the file is readable");
+            let previous = fs::read_to_string(dir.0.join(LIT)).unwrap();
             fs::remove_file(dir.0.join(LIT)).expect("temp file is removable");
+            assert_eq!(library.changed(), vec![LIT]);
             assert!(library.changed().is_empty());
             assert!(library.source(LIT).is_err());
+            dir.write(LIT, &previous);
+            assert_eq!(library.changed(), vec![LIT]);
+            assert!(library.changed().is_empty());
         }
     }
 
