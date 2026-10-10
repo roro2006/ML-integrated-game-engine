@@ -30,7 +30,6 @@ mod block_on;
 #[cfg(test)]
 mod clustered;
 mod debug_lines;
-#[cfg(test)]
 mod depth_prepass;
 mod frame;
 #[cfg(test)]
@@ -324,6 +323,7 @@ enum BuiltShader {
     Bloom(post::bloom::BloomResources),
     Exposure(post::exposure::ExposureResources),
     Mips(texture::MipGenerator),
+    DepthPrepass(wgpu::RenderPipeline),
 }
 
 /// Owns the GPU device, queue, and output (a window's swapchain or an
@@ -342,6 +342,8 @@ pub struct Renderer {
     pipeline_layout: wgpu::PipelineLayout,
     draw_layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
+    /// Writes opaque depth before the forward pass (ADR-0024).
+    depth_prepass_pipeline: wgpu::RenderPipeline,
     /// The last hot-reload failure, kept so the engine can show it on the debug
     /// overlay. The renderer does not log: that is the engine layer's job.
     shader_error: Option<String>,
@@ -524,6 +526,19 @@ impl Renderer {
             )?
         };
 
+        let depth_prepass_pipeline = {
+            let source = shaders
+                .source(shaders::DEPTH_PREPASS)
+                .map_err(RenderError::Shader)?
+                .into_owned();
+            depth_prepass::create_pipeline(&device, &pipeline_layout, &source).map_err(|message| {
+                RenderError::ShaderCompile {
+                    shader: shaders::DEPTH_PREPASS.to_owned(),
+                    message,
+                }
+            })?
+        };
+
         // The debug pass reuses the *same* globals layout and, at draw time, the
         // same globals buffer: it needs the view-projection and nothing else, so
         // a second per-frame uniform would be a second copy of data already
@@ -636,6 +651,7 @@ impl Renderer {
             pipeline_layout,
             draw_layout,
             pipeline,
+            depth_prepass_pipeline,
             shader_error: None,
             shader_failures: BTreeMap::new(),
             transients: TexturePool::default(),
@@ -945,6 +961,20 @@ impl Renderer {
         )
     }
 
+    fn build_depth_prepass_pipeline(&mut self) -> Result<wgpu::RenderPipeline, RenderError> {
+        let source = self
+            .shaders
+            .source(shaders::DEPTH_PREPASS)
+            .map_err(RenderError::Shader)?
+            .into_owned();
+        depth_prepass::create_pipeline(&self.device, &self.pipeline_layout, &source).map_err(|message| {
+            RenderError::ShaderCompile {
+                shader: shaders::DEPTH_PREPASS.to_owned(),
+                message,
+            }
+        })
+    }
+
     fn build_debug_pipeline(&mut self) -> Result<wgpu::RenderPipeline, RenderError> {
         let source = self
             .shaders
@@ -989,6 +1019,7 @@ impl Renderer {
         use shaders::PipelineFamily;
         Ok(match family {
             PipelineFamily::Lit => BuiltShader::Lit(self.build_lit_pipeline()?),
+            PipelineFamily::DepthPrepass => BuiltShader::DepthPrepass(self.build_depth_prepass_pipeline()?),
             PipelineFamily::Debug => BuiltShader::Debug(self.build_debug_pipeline()?),
             PipelineFamily::Tonemap => BuiltShader::Tonemap(build_tonemap_pipeline(
                 &self.device,
@@ -1058,6 +1089,7 @@ impl Renderer {
                 self.exposure.average = resources.average;
             }
             BuiltShader::Mips(generator) => self.mips = generator,
+            BuiltShader::DepthPrepass(pipeline) => self.depth_prepass_pipeline = pipeline,
         }
     }
 

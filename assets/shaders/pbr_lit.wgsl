@@ -71,7 +71,8 @@ struct VertexInput {
 }
 
 struct VertexOutput {
-    @builtin(position) clip_position: vec4<f32>,
+    // Invariant: must match depth_prepass.wgsl bit for bit (ADR-0024).
+    @builtin(position) @invariant clip_position: vec4<f32>,
     @location(0) world_position: vec3<f32>,
     @location(1) world_normal: vec3<f32>,
     @location(2) uv: vec2<f32>,

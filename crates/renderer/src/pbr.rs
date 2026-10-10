@@ -163,7 +163,10 @@ pub(crate) fn create_pipeline(
         depth_stencil: Some(wgpu::DepthStencilState {
             format: crate::pipeline::DEPTH_FORMAT,
             depth_write_enabled: Some(true),
-            depth_compare: Some(wgpu::CompareFunction::Less),
+            // `LessEqual`: opaque surfaces pass where they equal the prepass
+            // depth (ADR-0024). Writes stay on for cut-outs, which the
+            // prepass does not draw; rewriting an equal value is harmless.
+            depth_compare: Some(wgpu::CompareFunction::LessEqual),
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
         }),

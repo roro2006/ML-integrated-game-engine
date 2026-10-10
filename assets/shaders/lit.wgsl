@@ -69,7 +69,8 @@ struct VertexInput {
 // that replaces it do not have to change in lockstep; one extra vec2 of
 // interpolation is noise next to the draw-call cost at this poly count.
 struct VertexOutput {
-    @builtin(position) clip_position: vec4<f32>,
+    // Invariant: must match depth_prepass.wgsl bit for bit (ADR-0024).
+    @builtin(position) @invariant clip_position: vec4<f32>,
     @location(0) world_normal: vec3<f32>,
     @location(1) uv: vec2<f32>,
     // Flat within a face, because a low-poly face's vertices all carry the

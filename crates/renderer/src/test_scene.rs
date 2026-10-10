@@ -559,6 +559,102 @@ mod pbr {
         }
     }
 
+    fn centre_of_stacked_quads(
+        renderer: &mut Renderer,
+        draws: [(&MaterialDesc, [[f32; 4]; 4]); 2],
+    ) -> [u8; 3] {
+        let mesh = renderer.upload_mesh(&quad()).expect("valid");
+        let material_a = renderer.create_material(draws[0].0);
+        let material_b = renderer.create_material(draws[1].0);
+
+        let view = look_at(EYE, [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+        let projection = perspective(
+            FOV_Y_DEGREES.to_radians(),
+            WIDTH as f32 / HEIGHT as f32,
+            0.1,
+            20.0,
+        );
+        let mut frame = RenderFrame::new(mul(&projection, &view), Color::BLACK);
+        frame.camera_position = EYE;
+        frame.light = crate::DirectionalLight {
+            color: [1.0, 1.0, 1.0],
+            intensity: 1.0,
+            ..crate::DirectionalLight::default()
+        }
+        .with_direction([0.0, 0.0, 1.0]);
+        frame.ambient.intensity = 0.0;
+        frame.post = PostSettings {
+            exposure_ev: 0.0,
+            ..PostSettings::default()
+        };
+
+        frame.push(DrawCommand {
+            mesh,
+            material: material_a,
+            model: draws[0].1,
+            normal_matrix: IDENTITY,
+        });
+        frame.push(DrawCommand {
+            mesh,
+            material: material_b,
+            model: draws[1].1,
+            normal_matrix: IDENTITY,
+        });
+
+        let image = renderer.render_to_image(&frame).expect("reads back");
+        let [r, g, b, _] = image.pixel(WIDTH / 2, HEIGHT / 2).expect("in bounds");
+        [r, g, b]
+    }
+
+    #[test]
+    #[ignore = "requires a GPU adapter and driver"]
+    fn a_cut_out_in_front_shows_the_opaque_surface_through_its_holes() {
+        let mut renderer = headless();
+
+        let opaque_desc = MaterialDesc {
+            base_color: [0.8, 0.0, 0.0, 1.0],
+            shading: Shading::Pbr,
+            roughness: 0.5,
+            alpha: crate::AlphaMode::Opaque,
+            ..MaterialDesc::default()
+        };
+
+        let mut cut_out_model = IDENTITY;
+        cut_out_model[3][2] = 1.0;
+
+        for alpha in [0.0, 1.0] {
+            for cut_out_first in [true, false] {
+                let cut_out_desc = MaterialDesc {
+                    base_color: [0.0, 0.8, 0.0, alpha],
+                    shading: Shading::Pbr,
+                    roughness: 0.5,
+                    alpha: crate::AlphaMode::Mask { cutoff: 0.5 },
+                    ..MaterialDesc::default()
+                };
+
+                let draws = if cut_out_first {
+                    [(&cut_out_desc, cut_out_model), (&opaque_desc, IDENTITY)]
+                } else {
+                    [(&opaque_desc, IDENTITY), (&cut_out_desc, cut_out_model)]
+                };
+
+                let [r, g, b] = centre_of_stacked_quads(&mut renderer, draws);
+
+                if alpha == 0.0 {
+                    assert!(
+                        r > g + 30 && r > 30,
+                        "alpha 0.0, cut_out_first={cut_out_first}: expected red-dominant, got {r}, {g}, {b}"
+                    );
+                } else {
+                    assert!(
+                        g > r + 30,
+                        "alpha 1.0, cut_out_first={cut_out_first}: expected green-dominant, got {r}, {g}, {b}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     #[ignore = "requires a GPU adapter and driver"]
     fn every_permutation_is_compiled_at_startup() {
@@ -696,6 +792,45 @@ mod pbr {
             assert_ne!(got, flat, "the map visibly changes the shading");
         }
     }
+}
+
+#[test]
+#[ignore = "requires a GPU adapter and driver"]
+fn gpu_pass_timings_arrive_a_few_frames_later_named_after_the_graph() {
+    let mut renderer = headless();
+    let frame = build(&mut renderer);
+
+    let supports_timestamps = renderer
+        .device
+        .features()
+        .contains(wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
+
+    for _ in 0..8 {
+        renderer.render(&frame).expect("renders");
+    }
+
+    if !supports_timestamps {
+        assert!(renderer.gpu_timings().is_none());
+        return;
+    }
+
+    let timings = renderer.gpu_timings().expect("timings arrive a few frames late");
+    let names: Vec<&str> = timings.iter().map(|timing| timing.name).collect();
+
+    assert_eq!(names.first(), Some(&"depth-prepass"));
+    assert_eq!(names.get(1), Some(&"lit"));
+
+    let graph_dump = renderer.graph_dump();
+    for name in &names {
+        assert!(graph_dump.contains(name), "graph dump missing pass {name}");
+    }
+
+    assert!(
+        timings
+            .iter()
+            .any(|timing| matches!(timing.gpu_ms, Some(ms) if ms > 0.0 && ms.is_finite())),
+        "expected at least one positive finite GPU timing"
+    );
 }
 
 /// E1 bloom acceptance: light above the threshold bleeds past its edges,

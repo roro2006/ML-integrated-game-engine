@@ -1,9 +1,11 @@
 //! The frame's passes, declared on the render graph.
 //!
-//! Three passes, each its own render pass:
+//! Four passes, each its own render pass:
 //!
-//! - `lit` clears the HDR scene target and the depth buffer, then draws the
-//!   opaque geometry in linear light.
+//! - `depth-prepass` clears the depth buffer and writes the depth of every
+//!   draw except cut-outs (ADR-0024).
+//! - `lit` clears the HDR scene target, loads that depth, and draws the
+//!   geometry in linear light, shading each visible opaque pixel once.
 //! - `tonemap` maps the HDR scene onto the swapchain image (`post::tonemap`).
 //! - `debug-lines` loads the swapchain image and depth and draws world-space
 //!   lines that test depth without writing it, so the scene hides them and
@@ -98,7 +100,10 @@ impl Renderer {
         // Depth is stored only when a later pass loads it; otherwise the store
         // is wasted bandwidth, which tiled integrated GPUs feel most.
         let depth_is_read_later = debug_vertices.is_some();
-        graph.add_pass("lit", &[], &[hdr, depth], move |context| {
+        graph.add_pass("depth-prepass", &[], &[depth], move |context| {
+            self.depth_prepass(context, depth, frame, plan)
+        });
+        graph.add_pass("lit", &[depth], &[hdr, depth], move |context| {
             self.lit_pass(context, hdr, depth, depth_is_read_later, frame, plan)
         });
         if frame.post.auto_exposure.is_some() {
@@ -204,9 +209,9 @@ impl Renderer {
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: &depth_view,
                 depth_ops: Some(wgpu::Operations {
-                    // 1.0 is the far plane for the `0..1` depth range
-                    // (ADR-0008), and `Less` keeps the nearest fragment.
-                    load: wgpu::LoadOp::Clear(1.0),
+                    // The prepass wrote the opaque depth this pass tests
+                    // against (ADR-0024).
+                    load: wgpu::LoadOp::Load,
                     store: if keep_depth {
                         wgpu::StoreOp::Store
                     } else {
@@ -256,6 +261,61 @@ impl Renderer {
             if let Some(binding) = pbr {
                 pass.set_bind_group(2, &binding.bind_group, &[]);
             }
+            pass.set_bind_group(1, &self.draw_bind_group, &[offset]);
+            pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+            pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..mesh.index_count, 0, 0..1);
+        }
+        Ok(())
+    }
+
+    /// Writes the depth of every opaque draw, so the lit pass shades each
+    /// visible pixel once (ADR-0024). Cut-out draws are left to the lit pass,
+    /// because depth written here cannot see their holes.
+    fn depth_prepass(
+        &self,
+        context: &mut PassContext,
+        depth: ResourceId,
+        frame: &RenderFrame,
+        plan: &DrawPlan,
+    ) -> Result<(), String> {
+        let depth_view = context.view(depth)?;
+        let mut pass = context.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("depth-prepass"),
+            color_attachments: &[],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    // 1.0 is the far plane for the `0..1` depth range
+                    // (ADR-0008), and `Less` keeps the nearest fragment.
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.depth_prepass_pipeline);
+        pass.set_bind_group(0, &self.globals_bind_group, &[]);
+        let stride = self.draw_stride as usize;
+        for planned in &plan.draws {
+            let is_cut_out = frame
+                .draws
+                .get(planned.draw)
+                .and_then(|draw| self.materials.get(draw.material))
+                .and_then(|material| material.pbr.as_ref())
+                .is_some_and(|binding| binding.key.alpha_mask);
+            if is_cut_out {
+                continue;
+            }
+            let Some(mesh) = self.meshes.get_by_index(planned.mesh) else {
+                continue;
+            };
+            let Ok(offset) = u32::try_from(planned.slot * stride) else {
+                continue;
+            };
             pass.set_bind_group(1, &self.draw_bind_group, &[offset]);
             pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
             pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);

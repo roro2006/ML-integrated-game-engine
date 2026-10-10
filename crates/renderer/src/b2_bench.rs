@@ -12,7 +12,7 @@
 //! adapter identity, not the preference, says which hardware class was used.
 
 use crate::b2_scene::{self, BenchLight, Summary};
-use crate::{GpuPreference, Renderer, RendererConfig, clustered, depth_prepass, gpu_timing, pipeline};
+use crate::{GpuPreference, Renderer, RendererConfig, clustered, gpu_timing, pipeline};
 
 const BENCH_SIZE: (u32, u32) = (2560, 1440);
 const WARMUP_FRAMES: u32 = 30;
@@ -60,6 +60,11 @@ impl Path {
         }
     }
 }
+
+/// The production prepass (`depth_prepass.wgsl`) with the scene's positions
+/// already in clip space: the same position-only, fragment-free work without
+/// the uniforms the fixed orthographic scene does not need.
+const PREPASS_SOURCE: &str = "@vertex fn vs_main(@location(0) position: vec3<f32>)     -> @builtin(position) @invariant vec4<f32> { return vec4<f32>(position, 1.0); }";
 
 /// Sources for the two prototypes: the production BRDF, the shared light
 /// loop, then the path's entry points.
@@ -157,7 +162,22 @@ impl Pipelines {
         let gbuffer_targets = GBUFFER_FORMATS.map(|format| Some(format.into()));
 
         Self {
-            prepass: depth_prepass::create(device),
+            prepass: device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("b2-depth-prepass"),
+                layout: None,
+                vertex: wgpu::VertexState {
+                    module: &module(device, "b2-depth-prepass", PREPASS_SOURCE.to_owned()),
+                    entry_point: Some("vs_main"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    buffers: &[Some(pipeline::vertex_layout())],
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: Some(depth_state(true, wgpu::CompareFunction::Less)),
+                multisample: wgpu::MultisampleState::default(),
+                fragment: None,
+                multiview_mask: None,
+                cache: None,
+            }),
             cull: device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some("b2-light-cull"),
                 layout: None,
