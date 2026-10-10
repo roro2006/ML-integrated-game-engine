@@ -49,6 +49,8 @@ mod post;
 mod registry;
 mod sampler;
 mod shaders;
+mod shadow;
+mod shadow_pass;
 mod tangents;
 #[cfg(test)]
 mod test_scene;
@@ -58,8 +60,8 @@ mod uniforms;
 pub use debug_lines::DebugVertex;
 pub use frame::{
     AlphaMode, AmbientLight, AutoExposure, Bloom, DEFAULT_EXPOSURE_EV, DirectionalLight, DrawCommand, Grade,
-    MaterialDesc, MaterialHandle, MaterialTextures, MeshHandle, PostSettings, RenderFrame, Shading,
-    TextureHandle, Tonemapper,
+    MAX_CASCADES, MaterialDesc, MaterialHandle, MaterialTextures, MeshHandle, PostSettings, RenderFrame,
+    Shading, ShadowSettings, TextureHandle, Tonemapper,
 };
 pub use image::Image;
 pub use mesh::MeshInfo;
@@ -324,6 +326,7 @@ enum BuiltShader {
     Exposure(post::exposure::ExposureResources),
     Mips(texture::MipGenerator),
     DepthPrepass(wgpu::RenderPipeline),
+    Shadow(wgpu::RenderPipeline),
 }
 
 /// Owns the GPU device, queue, and output (a window's swapchain or an
@@ -360,8 +363,11 @@ pub struct Renderer {
     meshes: Registry<MeshHandle, GpuMesh>,
     materials: Registry<MaterialHandle, GpuMaterial>,
 
+    globals_layout: wgpu::BindGroupLayout,
     globals_buffer: wgpu::Buffer,
     globals_bind_group: wgpu::BindGroup,
+    /// Cascaded shadows: atlas, cascade uniforms, pipeline (C1).
+    shadows: shadow_pass::Shadows,
     draw_buffer: wgpu::Buffer,
     draw_bind_group: wgpu::BindGroup,
     /// Bytes between consecutive `DrawData` blocks; see `uniforms::draw_stride`.
@@ -618,8 +624,25 @@ impl Renderer {
         // because hardware disagrees, and a wrong stride is a validation error
         // on every single draw.
         let draw_stride = uniforms::draw_stride(device.limits().min_uniform_buffer_offset_alignment);
-        let (globals_buffer, globals_bind_group) =
-            pipeline::create_globals_resources(&device, &globals_layout);
+        let shadows = {
+            let source = shaders
+                .source(shaders::SHADOW_DEPTH)
+                .map_err(RenderError::Shader)?
+                .into_owned();
+            let layout = shadow_pass::AtlasLayout::for_settings(
+                &ShadowSettings::default(),
+                device.limits().max_texture_dimension_2d,
+            );
+            shadow_pass::Shadows::new(&device, &draw_layout, &source, layout).map_err(|message| {
+                RenderError::ShaderCompile {
+                    shader: shaders::SHADOW_DEPTH.to_owned(),
+                    message,
+                }
+            })?
+        };
+        let globals_buffer = pipeline::create_globals_buffer(&device);
+        let globals_bind_group =
+            pipeline::create_globals_bind_group(&device, &globals_layout, &globals_buffer, &shadows);
         let (draw_buffer, draw_bind_group) =
             pipeline::create_draw_resources(&device, &draw_layout, draw_stride, INITIAL_DRAW_CAPACITY);
 
@@ -659,8 +682,10 @@ impl Renderer {
             graph_dump: String::new(),
             meshes: Registry::default(),
             materials: Registry::default(),
+            globals_layout,
             globals_buffer,
             globals_bind_group,
+            shadows,
             draw_buffer,
             draw_bind_group,
             draw_stride,
@@ -975,6 +1000,60 @@ impl Renderer {
         })
     }
 
+    fn build_shadow_pipeline(&mut self) -> Result<wgpu::RenderPipeline, RenderError> {
+        let source = self
+            .shaders
+            .source(shaders::SHADOW_DEPTH)
+            .map_err(RenderError::Shader)?
+            .into_owned();
+        shadow_pass::create_pipeline(&self.device, &self.shadows.pipeline_layout, &source).map_err(
+            |message| RenderError::ShaderCompile {
+                shader: shaders::SHADOW_DEPTH.to_owned(),
+                message,
+            },
+        )
+    }
+
+    /// Fits this frame's cascades and uploads them, recreating the atlas
+    /// (and group 0, which binds it) when the settings change its layout.
+    fn prepare_shadows(&mut self, frame: &RenderFrame) {
+        let max_dimension = self.device.limits().max_texture_dimension_2d;
+        let layout = shadow_pass::AtlasLayout::for_settings(&frame.light.shadow, max_dimension);
+        if layout != self.shadows.atlas.layout {
+            self.shadows.atlas = shadow_pass::Atlas::new(&self.device, layout);
+            self.globals_bind_group = pipeline::create_globals_bind_group(
+                &self.device,
+                &self.globals_layout,
+                &self.globals_buffer,
+                &self.shadows,
+            );
+        }
+        self.shadows.cascades = if layout.cascades == 0 {
+            Vec::new()
+        } else {
+            // Fitted at the resolution the atlas actually has, which the
+            // device may have reduced.
+            let settings = ShadowSettings {
+                cascades: layout.cascades,
+                resolution: layout.resolution,
+                ..frame.light.shadow
+            };
+            shadow::fit(&frame.view_proj, frame.light.direction, &settings)
+        };
+        self.queue.write_buffer(
+            &self.shadows.data_buffer,
+            0,
+            &shadow_pass::shadow_data_bytes(&self.shadows.cascades, layout),
+        );
+        if !self.shadows.cascades.is_empty() {
+            self.queue.write_buffer(
+                &self.shadows.cascade_uniforms.buffer,
+                0,
+                &shadow_pass::cascade_bytes(&self.shadows.cascades, self.shadows.cascade_uniforms.stride),
+            );
+        }
+    }
+
     fn build_debug_pipeline(&mut self) -> Result<wgpu::RenderPipeline, RenderError> {
         let source = self
             .shaders
@@ -1020,6 +1099,7 @@ impl Renderer {
         Ok(match family {
             PipelineFamily::Lit => BuiltShader::Lit(self.build_lit_pipeline()?),
             PipelineFamily::DepthPrepass => BuiltShader::DepthPrepass(self.build_depth_prepass_pipeline()?),
+            PipelineFamily::Shadow => BuiltShader::Shadow(self.build_shadow_pipeline()?),
             PipelineFamily::Debug => BuiltShader::Debug(self.build_debug_pipeline()?),
             PipelineFamily::Tonemap => BuiltShader::Tonemap(build_tonemap_pipeline(
                 &self.device,
@@ -1090,6 +1170,7 @@ impl Renderer {
             }
             BuiltShader::Mips(generator) => self.mips = generator,
             BuiltShader::DepthPrepass(pipeline) => self.depth_prepass_pipeline = pipeline,
+            BuiltShader::Shadow(pipeline) => self.shadows.pipeline = pipeline,
         }
     }
 
@@ -1225,6 +1306,8 @@ impl Renderer {
             let vertices = &frame.debug_lines[..count as usize];
             debug_lines::pack_vertices(&mut self.debug_staging, vertices);
         }
+
+        self.prepare_shadows(frame);
 
         let (target, suboptimal) = match self.acquire()? {
             Acquired::Ready { target, suboptimal } => (target, suboptimal),

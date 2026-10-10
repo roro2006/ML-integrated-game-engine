@@ -794,6 +794,108 @@ mod pbr {
     }
 }
 
+/// Reads the shadow atlas back as depth values, row by row.
+fn read_shadow_atlas(renderer: &Renderer) -> (u32, u32, Vec<f32>) {
+    let atlas = &renderer.shadows.atlas;
+    let (width, height) = atlas.layout.size();
+    let bytes_per_row =
+        (width * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let buffer = renderer.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("shadow-atlas-readback"),
+        size: u64::from(bytes_per_row) * u64::from(height),
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let mut encoder = renderer
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture: &atlas.texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::DepthOnly,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(bytes_per_row),
+                rows_per_image: Some(height),
+            },
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    renderer.queue.submit(std::iter::once(encoder.finish()));
+    let (sender, receiver) = std::sync::mpsc::channel();
+    buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| {
+        let _ = sender.send(result);
+    });
+    renderer
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .expect("the device finishes");
+    receiver.recv().expect("map callback").expect("buffer maps");
+    let mapped = buffer.get_mapped_range(..).expect("mapped");
+    let depths = mapped
+        .chunks_exact(bytes_per_row as usize)
+        .flat_map(|row| {
+            row[..width as usize * 4]
+                .chunks_exact(4)
+                .map(|texel| f32::from_le_bytes([texel[0], texel[1], texel[2], texel[3]]))
+        })
+        .collect();
+    (width, height, depths)
+}
+
+#[test]
+#[ignore = "requires a GPU adapter and driver"]
+fn the_shadow_pass_draws_the_scene_into_every_cascade_before_the_prepass() {
+    let mut renderer = headless();
+    let frame = build(&mut renderer);
+    renderer.render_to_image(&frame).expect("renders");
+
+    let dump = renderer.graph_dump();
+    let shadow = dump.find("shadow").expect("the shadow pass is in the graph");
+    let prepass = dump.find("depth-prepass").expect("the prepass is in the graph");
+    assert!(shadow < prepass, "shadows are drawn before the prepass:\n{dump}");
+
+    let cascades = renderer.shadows.cascades.len() as u32;
+    assert_eq!(cascades, crate::ShadowSettings::default().cascades);
+    let (width, height, depths) = read_shadow_atlas(&renderer);
+    let resolution = width / cascades;
+    for cascade in 0..cascades {
+        let covered = (0..height)
+            .flat_map(|y| (0..resolution).map(move |x| (y * width + cascade * resolution + x) as usize))
+            .filter(|&index| depths[index] < 1.0)
+            .count();
+        assert!(covered > 0, "cascade {cascade} holds geometry depth");
+    }
+}
+
+#[test]
+#[ignore = "requires a GPU adapter and driver"]
+fn shadows_off_records_no_shadow_pass() {
+    let mut renderer = headless();
+    let mut frame = build(&mut renderer);
+    frame.light.shadow.cascades = 0;
+    renderer.render_to_image(&frame).expect("renders");
+    assert!(renderer.shadows.cascades.is_empty());
+    assert!(
+        !renderer
+            .graph_dump()
+            .lines()
+            .any(|line| line.contains(": shadow")),
+        "no shadow pass:\n{}",
+        renderer.graph_dump()
+    );
+    assert_eq!(renderer.shadows.atlas.layout.size(), (1, 1));
+}
+
 #[test]
 #[ignore = "requires a GPU adapter and driver"]
 fn gpu_pass_timings_arrive_a_few_frames_later_named_after_the_graph() {
@@ -817,13 +919,21 @@ fn gpu_pass_timings_arrive_a_few_frames_later_named_after_the_graph() {
     let timings = renderer.gpu_timings().expect("timings arrive a few frames late");
     let names: Vec<&str> = timings.iter().map(|timing| timing.name).collect();
 
-    assert_eq!(names.first(), Some(&"depth-prepass"));
-    assert_eq!(names.get(1), Some(&"lit"));
-
+    // The timings follow the graph's pass order exactly: "  0 shadow: ...".
     let graph_dump = renderer.graph_dump();
-    for name in &names {
-        assert!(graph_dump.contains(name), "graph dump missing pass {name}");
-    }
+    let graph_passes: Vec<&str> = graph_dump
+        .lines()
+        .take_while(|line| !line.starts_with("resources"))
+        .filter_map(|line| {
+            line.trim_start()
+                .split_once(' ')?
+                .1
+                .split_once(':')
+                .map(|(name, _)| name)
+        })
+        .collect();
+    assert_eq!(names, graph_passes, "graph:\n{graph_dump}");
+    assert_eq!(&names[..3], ["shadow", "depth-prepass", "lit"]);
 
     assert!(
         timings

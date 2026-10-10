@@ -59,22 +59,56 @@ pub(crate) fn vertex_layout() -> wgpu::VertexBufferLayout<'static> {
     }
 }
 
-/// Bind group 0: per-frame `Globals`.
+/// Bind group 0: per-frame `Globals`, then the shadow data, atlas and
+/// comparison sampler (C1).
+///
+/// The shadow bindings live here rather than in their own group so that
+/// `lit.wgsl` and `pbr_lit.wgsl`, whose other groups differ, sample shadows
+/// through one shared include. Shaders that do not sample shadows simply do
+/// not declare bindings 1 to 3.
 pub(crate) fn globals_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("globals-layout"),
-        entries: &[wgpu::BindGroupLayoutEntry {
-            binding: 0,
-            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                // Declared so a layout/shader mismatch is caught at pipeline
-                // creation rather than becoming a per-draw validation cost.
-                min_binding_size: wgpu::BufferSize::new(GLOBALS_SIZE as u64),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    // Declared so a layout/shader mismatch is caught at pipeline
+                    // creation rather than becoming a per-draw validation cost.
+                    min_binding_size: wgpu::BufferSize::new(GLOBALS_SIZE as u64),
+                },
+                count: None,
             },
-            count: None,
-        }],
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(crate::shadow_pass::SHADOW_DATA_SIZE as u64),
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Depth,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                count: None,
+            },
+        ],
     })
 }
 
@@ -184,29 +218,48 @@ pub(crate) fn depth_size(width: u32, height: u32) -> Option<(u32, u32)> {
 }
 
 /// Creates the per-frame uniform buffer and the bind group that points at it.
-pub(crate) fn create_globals_resources(
-    device: &wgpu::Device,
-    layout: &wgpu::BindGroupLayout,
-) -> (wgpu::Buffer, wgpu::BindGroup) {
-    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+pub(crate) fn create_globals_buffer(device: &wgpu::Device) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("globals-uniform"),
         size: GLOBALS_SIZE as u64,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
-    });
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+    })
+}
+
+/// Group 0's bind group. Rebuilt when the shadow atlas is recreated.
+pub(crate) fn create_globals_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    globals: &wgpu::Buffer,
+    shadows: &crate::shadow_pass::Shadows,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("globals-bind-group"),
         layout,
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                buffer: &buffer,
-                offset: 0,
-                size: wgpu::BufferSize::new(GLOBALS_SIZE as u64),
-            }),
-        }],
-    });
-    (buffer, bind_group)
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: globals,
+                    offset: 0,
+                    size: wgpu::BufferSize::new(GLOBALS_SIZE as u64),
+                }),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: shadows.data_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(&shadows.atlas.view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::Sampler(&shadows.sampler),
+            },
+        ],
+    })
 }
 
 /// Creates a per-draw uniform buffer holding `capacity` draws, and its bind

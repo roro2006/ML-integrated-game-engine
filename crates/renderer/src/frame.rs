@@ -177,6 +177,40 @@ pub struct DirectionalLight {
     pub direction: [f32; 3],
     pub color: [f32; 3],
     pub intensity: f32,
+    /// Cascaded shadows from this light (C1).
+    pub shadow: ShadowSettings,
+}
+
+/// Cascaded shadow map settings for the directional light.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShadowSettings {
+    /// Cascades, from 0 (no shadows) to [`MAX_CASCADES`]. Larger values are
+    /// clamped. The tiers use 2 (Low), 3 (Medium), 4 (High) and 5 (Epic).
+    pub cascades: u32,
+    /// The practical split blend: 0 splits the range evenly, 1 logarithmically.
+    /// Logarithmic gives near cascades more resolution, even keeps far ones
+    /// usable.
+    pub split_lambda: f32,
+    /// Shadows end this far from the camera, in metres along the view
+    /// direction, or at the far plane if that is nearer.
+    pub max_distance: f32,
+    /// Texels along each side of one cascade's square in the shadow atlas.
+    pub resolution: u32,
+}
+
+/// The most cascades a light can have: the Epic tier's count.
+pub const MAX_CASCADES: u32 = 5;
+
+impl Default for ShadowSettings {
+    /// The High tier.
+    fn default() -> Self {
+        Self {
+            cascades: 4,
+            split_lambda: 0.75,
+            max_distance: 80.0,
+            resolution: 2048,
+        }
+    }
 }
 
 impl DirectionalLight {
@@ -205,6 +239,7 @@ impl Default for DirectionalLight {
             direction: [0.0, 1.0, 0.0],
             color: [1.0, 0.98, 0.92],
             intensity: 1.0,
+            shadow: ShadowSettings::default(),
         }
         .with_direction([0.35, 0.8, 0.45])
     }

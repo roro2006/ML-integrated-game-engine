@@ -39,6 +39,9 @@ pub(crate) const EXPOSURE_HISTOGRAM: &str = "exposure_histogram.wgsl";
 /// Physically based metallic-roughness material.
 pub(crate) const PBR_LIT: &str = "pbr_lit.wgsl";
 
+/// The directional light's shadow cascades (C1).
+pub(crate) const SHADOW_DEPTH: &str = "shadow_depth.wgsl";
+
 /// Depth only, ahead of the forward pass (ADR-0024).
 pub(crate) const DEPTH_PREPASS: &str = "depth_prepass.wgsl";
 
@@ -62,6 +65,7 @@ pub(crate) enum PipelineFamily {
     Exposure,
     Mips,
     DepthPrepass,
+    Shadow,
 }
 
 /// Includes are tracked by `ShaderLibrary`; this table owns rebuild routing.
@@ -74,6 +78,7 @@ pub(crate) const PIPELINES: &[(&str, PipelineFamily)] = &[
     (EXPOSURE_HISTOGRAM, PipelineFamily::Exposure),
     (MIP_DOWNSAMPLE, PipelineFamily::Mips),
     (DEPTH_PREPASS, PipelineFamily::DepthPrepass),
+    (SHADOW_DEPTH, PipelineFamily::Shadow),
 ];
 
 pub(crate) fn affected_pipelines(changed: &[String]) -> Vec<(&'static str, PipelineFamily)> {
@@ -115,6 +120,7 @@ const EMBEDDED: &[(&str, &str)] = &[
     (BLOOM, shader_file!("bloom.wgsl")),
     (BRDF, shader_file!("brdf.wgsl")),
     (DEPTH_PREPASS, shader_file!("depth_prepass.wgsl")),
+    (SHADOW_DEPTH, shader_file!("shadow_depth.wgsl")),
 ];
 
 fn embedded_source(name: &str) -> Option<&'static str> {

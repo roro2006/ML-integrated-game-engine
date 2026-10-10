@@ -96,14 +96,21 @@ impl Renderer {
         let surface = graph.import("surface");
         let hdr = graph.create("hdr", hdr_desc(width, height));
         let depth = graph.create("depth", depth_desc(width, height));
+        // Persistent rather than transient: group 0 binds it for sampling.
+        let atlas = graph.import("shadow-atlas");
 
         // Depth is stored only when a later pass loads it; otherwise the store
         // is wasted bandwidth, which tiled integrated GPUs feel most.
         let depth_is_read_later = debug_vertices.is_some();
+        if !self.shadows.cascades.is_empty() {
+            graph.add_pass("shadow", &[], &[atlas], move |context| {
+                self.shadow_pass(context, atlas, frame, plan)
+            });
+        }
         graph.add_pass("depth-prepass", &[], &[depth], move |context| {
             self.depth_prepass(context, depth, frame, plan)
         });
-        graph.add_pass("lit", &[depth], &[hdr, depth], move |context| {
+        graph.add_pass("lit", &[depth, atlas], &[hdr, depth], move |context| {
             self.lit_pass(context, hdr, depth, depth_is_read_later, frame, plan)
         });
         if frame.post.auto_exposure.is_some() {
@@ -141,6 +148,7 @@ impl Renderer {
             Ok::<(), RenderError>(())
         };
         set_view(surface, Some(surface_view))?;
+        set_view(atlas, Some(self.shadows.atlas.view.clone()))?;
         for (id, name, desc) in compiled.transients() {
             let slot = pool.acquire(desc, |desc| resources::create_texture(&self.device, name, desc));
             let view = pool
@@ -265,6 +273,80 @@ impl Renderer {
             pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
             pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..mesh.index_count, 0, 0..1);
+        }
+        Ok(())
+    }
+
+    /// Draws every cascade into its viewport of the atlas (C1). Each draw is
+    /// culled per cascade by its bounding sphere. Cut-outs are skipped until
+    /// the masked shadow variant lands (M18 slice 3).
+    fn shadow_pass(
+        &self,
+        context: &mut PassContext,
+        atlas: ResourceId,
+        frame: &RenderFrame,
+        plan: &DrawPlan,
+    ) -> Result<(), String> {
+        let atlas_view = context.view(atlas)?;
+        let mut pass = context.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("shadow"),
+            color_attachments: &[],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &atlas_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        let shadows = &self.shadows;
+        let layout = shadows.atlas.layout;
+        pass.set_pipeline(&shadows.pipeline);
+        let stride = self.draw_stride as usize;
+        for (index, cascade) in shadows.cascades.iter().enumerate() {
+            let index = u32::try_from(index).map_err(|_| "too many cascades".to_owned())?;
+            let [x, y, width, height] = layout.viewport(index);
+            pass.set_viewport(x, y, width, height, 0.0, 1.0);
+            pass.set_bind_group(
+                0,
+                &shadows.cascade_uniforms.bind_group,
+                &[index * shadows.cascade_uniforms.stride],
+            );
+            for planned in &plan.draws {
+                let Some(draw) = frame.draws.get(planned.draw) else {
+                    continue;
+                };
+                let is_cut_out = self
+                    .materials
+                    .get(draw.material)
+                    .and_then(|material| material.pbr.as_ref())
+                    .is_some_and(|binding| binding.key.alpha_mask);
+                if is_cut_out {
+                    continue;
+                }
+                let Some(mesh) = self.meshes.get_by_index(planned.mesh) else {
+                    continue;
+                };
+                let (centre, radius) = crate::shadow_pass::world_sphere(
+                    &draw.model,
+                    mesh.bounds.center(),
+                    mesh.bounds.half_extents(),
+                );
+                if !crate::shadow_pass::may_cast_into(cascade, layout.resolution, centre, radius) {
+                    continue;
+                }
+                let Ok(offset) = u32::try_from(planned.slot * stride) else {
+                    continue;
+                };
+                pass.set_bind_group(1, &self.draw_bind_group, &[offset]);
+                pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..mesh.index_count, 0, 0..1);
+            }
         }
         Ok(())
     }
