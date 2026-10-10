@@ -22,8 +22,16 @@
 //! [`Image`]. Both draw through the same code, which is what makes a readback a
 //! fair stand-in for what a window shows.
 
+#[cfg(test)]
+mod b2_bench;
+#[cfg(test)]
+mod b2_scene;
 mod block_on;
+#[cfg(test)]
+mod clustered;
 mod debug_lines;
+#[cfg(test)]
+mod depth_prepass;
 mod frame;
 #[cfg(test)]
 mod golden;
