@@ -24,7 +24,7 @@
 pub use renderer::{
     AdapterInfo, AmbientLight, BackendPreference, Color, DeviceKind, DirectionalLight, DrawCommand,
     FrameOutcome, FrameStats, GpuPreference, MaterialDesc, MaterialHandle, MeshData, MeshHandle, PassTiming,
-    PresentMode, RenderError, RenderFrame, RendererConfig, SkipReason,
+    PresentMode, RenderError, RenderFrame, RendererConfig, ShadowSettings, SkipReason, Sky,
 };
 
 use crate::camera::Camera;
@@ -367,8 +367,23 @@ impl RenderExtractor {
         frame.view_proj = view_proj;
         frame.camera_position = camera.eye.to_array();
         frame.clear_color = world.resource::<ClearColor>().copied().unwrap_or_default().0;
-        frame.light = lighting.key;
-        frame.ambient = lighting.ambient;
+        // A time of day drives the key light, the sky and how much ambient
+        // the night leaves; without one, the scene's fixed lighting stands
+        // and no sky is drawn.
+        match world.resource::<crate::time_of_day::TimeOfDay>() {
+            Some(time) => {
+                let celestial = time.celestial(camera.eye.y);
+                frame.light = celestial.key;
+                frame.ambient = lighting.ambient;
+                frame.ambient.intensity *= crate::time_of_day::TimeOfDay::ambient_scale(celestial.daylight);
+                frame.sky = Some(celestial.sky);
+            }
+            None => {
+                frame.light = lighting.key;
+                frame.ambient = lighting.ambient;
+                frame.sky = None;
+            }
+        }
         frame.clear_draws();
 
         let mut stats = ExtractStats::default();
@@ -793,6 +808,30 @@ mod tests {
         assert_eq!(frame.clear_color, Color::rgb(0.2, 0.3, 0.4));
         assert_eq!(frame.light, lighting.key);
         assert_eq!(frame.ambient, lighting.ambient);
+        assert_eq!(frame.sky, None, "no time of day, no sky");
+    }
+
+    #[test]
+    fn a_time_of_day_drives_the_key_light_sky_and_ambient() {
+        use crate::time_of_day::TimeOfDay;
+        let mut world = test_world();
+        let lighting = SceneLighting::default();
+        world.insert_resource(lighting);
+        let midnight = TimeOfDay {
+            hours: 0.0,
+            ..TimeOfDay::default()
+        };
+        world.insert_resource(midnight);
+
+        let frame = extract_render_frame(&world, ASPECT);
+        let eye = world.resource::<Camera>().copied().unwrap_or_default().eye;
+        let celestial = midnight.celestial(eye.y);
+        assert_eq!(frame.light, celestial.key, "the moon lights the night");
+        assert_eq!(frame.sky, Some(celestial.sky));
+        assert!(
+            frame.ambient.intensity < lighting.ambient.intensity * 0.5,
+            "night dims the ambient fill"
+        );
     }
 
     #[test]

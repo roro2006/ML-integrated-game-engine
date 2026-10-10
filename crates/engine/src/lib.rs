@@ -21,6 +21,7 @@ pub mod render;
 mod runner;
 pub mod shapes;
 pub mod time;
+pub mod time_of_day;
 
 /// Engine path services, re-exported from the platform layer.
 pub use platform::paths;
