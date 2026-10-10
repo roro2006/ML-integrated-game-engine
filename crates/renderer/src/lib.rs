@@ -22,6 +22,7 @@
 //! [`Image`]. Both draw through the same code, which is what makes a readback a
 //! fair stand-in for what a window shows.
 
+mod atmosphere;
 #[cfg(test)]
 mod b2_bench;
 #[cfg(test)]
@@ -57,11 +58,12 @@ mod test_scene;
 mod texture;
 mod uniforms;
 
+pub use atmosphere::sunlight_transmittance;
 pub use debug_lines::DebugVertex;
 pub use frame::{
     AlphaMode, AmbientLight, AutoExposure, Bloom, DEFAULT_EXPOSURE_EV, DirectionalLight, DrawCommand, Grade,
     MAX_CASCADES, MaterialDesc, MaterialHandle, MaterialTextures, MeshHandle, PostSettings, RenderFrame,
-    Shading, ShadowSettings, TextureHandle, Tonemapper,
+    Shading, ShadowSettings, Sky, TextureHandle, Tonemapper,
 };
 pub use image::Image;
 pub use mesh::MeshInfo;
@@ -327,6 +329,8 @@ enum BuiltShader {
     Mips(texture::MipGenerator),
     DepthPrepass(wgpu::RenderPipeline),
     Shadow(wgpu::RenderPipeline, wgpu::RenderPipeline),
+    Atmosphere(Box<atmosphere::luts::AtmosphereLuts>),
+    Sky(Box<atmosphere::sky::SkyResources>),
 }
 
 /// Owns the GPU device, queue, and output (a window's swapchain or an
@@ -368,6 +372,10 @@ pub struct Renderer {
     globals_bind_group: wgpu::BindGroup,
     /// Cascaded shadows: atlas, cascade uniforms, pipeline (C1).
     shadows: shadow_pass::Shadows,
+    /// The atmosphere's baked lookup tables (D3).
+    atmosphere: atmosphere::luts::AtmosphereLuts,
+    /// The sky-view LUT and the sky pass, used when a frame has a sky.
+    sky: atmosphere::sky::SkyResources,
     draw_buffer: wgpu::Buffer,
     draw_bind_group: wgpu::BindGroup,
     /// Bytes between consecutive `DrawData` blocks; see `uniforms::draw_stride`.
@@ -624,6 +632,34 @@ impl Renderer {
         // because hardware disagrees, and a wrong stride is a validation error
         // on every single draw.
         let draw_stride = uniforms::draw_stride(device.limits().min_uniform_buffer_offset_alignment);
+        let atmosphere = {
+            let source = shaders
+                .source(shaders::ATMOSPHERE_LUTS)
+                .map_err(RenderError::Shader)?
+                .into_owned();
+            atmosphere::luts::AtmosphereLuts::new(&device, &source, atmosphere::AtmosphereParams::default())
+                .map_err(|message| RenderError::ShaderCompile {
+                shader: shaders::ATMOSPHERE_LUTS.to_owned(),
+                message,
+            })?
+        };
+        let sky = {
+            let source = shaders
+                .source(shaders::ATMOSPHERE_SKY)
+                .map_err(RenderError::Shader)?
+                .into_owned();
+            atmosphere::sky::SkyResources::new(
+                &device,
+                &source,
+                &atmosphere,
+                passes::HDR_FORMAT,
+                pipeline::DEPTH_FORMAT,
+            )
+            .map_err(|message| RenderError::ShaderCompile {
+                shader: shaders::ATMOSPHERE_SKY.to_owned(),
+                message,
+            })?
+        };
         let shadows = {
             let source = shaders
                 .source(shaders::SHADOW_DEPTH)
@@ -686,6 +722,8 @@ impl Renderer {
             globals_buffer,
             globals_bind_group,
             shadows,
+            atmosphere,
+            sky,
             draw_buffer,
             draw_bind_group,
             draw_stride,
@@ -712,6 +750,7 @@ impl Renderer {
             last_frame: None,
             bloom,
         };
+        renderer.bake_atmosphere();
         renderer.configure_output();
         Ok(renderer)
     }
@@ -1020,6 +1059,18 @@ impl Renderer {
         })
     }
 
+    /// Bakes the atmosphere's lookup tables. A few hundred microseconds of
+    /// compute, run at startup and when the atmosphere shader is reloaded.
+    fn bake_atmosphere(&self) {
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("atmosphere-bake"),
+            });
+        self.atmosphere.bake(&self.queue, &mut encoder);
+        self.queue.submit(std::iter::once(encoder.finish()));
+    }
+
     /// Fits this frame's cascades and uploads them, recreating the atlas
     /// (and group 0, which binds it) when the settings change its layout.
     fn prepare_shadows(&mut self, frame: &RenderFrame) {
@@ -1105,6 +1156,40 @@ impl Renderer {
         Ok(match family {
             PipelineFamily::Lit => BuiltShader::Lit(self.build_lit_pipeline()?),
             PipelineFamily::DepthPrepass => BuiltShader::DepthPrepass(self.build_depth_prepass_pipeline()?),
+            PipelineFamily::Atmosphere => {
+                let source = self
+                    .shaders
+                    .source(shaders::ATMOSPHERE_LUTS)
+                    .map_err(RenderError::Shader)?
+                    .into_owned();
+                BuiltShader::Atmosphere(Box::new(
+                    atmosphere::luts::AtmosphereLuts::new(&self.device, &source, self.atmosphere.params)
+                        .map_err(|message| RenderError::ShaderCompile {
+                            shader: shaders::ATMOSPHERE_LUTS.to_owned(),
+                            message,
+                        })?,
+                ))
+            }
+            PipelineFamily::Sky => {
+                let source = self
+                    .shaders
+                    .source(shaders::ATMOSPHERE_SKY)
+                    .map_err(RenderError::Shader)?
+                    .into_owned();
+                BuiltShader::Sky(Box::new(
+                    atmosphere::sky::SkyResources::new(
+                        &self.device,
+                        &source,
+                        &self.atmosphere,
+                        passes::HDR_FORMAT,
+                        pipeline::DEPTH_FORMAT,
+                    )
+                    .map_err(|message| RenderError::ShaderCompile {
+                        shader: shaders::ATMOSPHERE_SKY.to_owned(),
+                        message,
+                    })?,
+                ))
+            }
             PipelineFamily::Shadow => {
                 let (plain, masked) = self.build_shadow_pipelines()?;
                 BuiltShader::Shadow(plain, masked)
@@ -1179,6 +1264,12 @@ impl Renderer {
             }
             BuiltShader::Mips(generator) => self.mips = generator,
             BuiltShader::DepthPrepass(pipeline) => self.depth_prepass_pipeline = pipeline,
+            BuiltShader::Atmosphere(luts) => {
+                self.atmosphere = *luts;
+                self.sky.rebind(&self.device, &self.atmosphere);
+                self.bake_atmosphere();
+            }
+            BuiltShader::Sky(sky) => self.sky = *sky,
             BuiltShader::Shadow(plain, masked) => {
                 self.shadows.pipeline = plain;
                 self.shadows.masked_pipeline = masked;
@@ -1320,6 +1411,15 @@ impl Renderer {
         }
 
         self.prepare_shadows(frame);
+        if let Some(sky) = &frame.sky {
+            let radius = atmosphere::sky::camera_radius(&self.atmosphere.params, frame.camera_position[1]);
+            let inverse = uniforms::inverse(&frame.view_proj).unwrap_or(uniforms::IDENTITY);
+            self.queue.write_buffer(
+                &self.sky.frame_buffer,
+                0,
+                &atmosphere::sky::sky_frame_bytes(&inverse, sky, radius),
+            );
+        }
 
         let (target, suboptimal) = match self.acquire()? {
             Acquired::Ready { target, suboptimal } => (target, suboptimal),

@@ -39,6 +39,15 @@ pub(crate) const EXPOSURE_HISTOGRAM: &str = "exposure_histogram.wgsl";
 /// Physically based metallic-roughness material.
 pub(crate) const PBR_LIT: &str = "pbr_lit.wgsl";
 
+/// Bakes the atmosphere's transmittance and multiple-scattering LUTs (D3).
+pub(crate) const ATMOSPHERE_LUTS: &str = "atmosphere_luts.wgsl";
+
+/// The sky-view LUT and the fullscreen sky (D3).
+pub(crate) const ATMOSPHERE_SKY: &str = "atmosphere_sky.wgsl";
+
+/// The atmosphere's medium and LUT mappings. Included, never compiled alone.
+pub(crate) const ATMOSPHERE: &str = "atmosphere.wgsl";
+
 /// Shadow sampling for the lit shaders. Included, never compiled alone.
 pub(crate) const SHADOW_SAMPLING: &str = "shadow.wgsl";
 
@@ -69,6 +78,8 @@ pub(crate) enum PipelineFamily {
     Mips,
     DepthPrepass,
     Shadow,
+    Atmosphere,
+    Sky,
 }
 
 /// Includes are tracked by `ShaderLibrary`; this table owns rebuild routing.
@@ -82,6 +93,8 @@ pub(crate) const PIPELINES: &[(&str, PipelineFamily)] = &[
     (MIP_DOWNSAMPLE, PipelineFamily::Mips),
     (DEPTH_PREPASS, PipelineFamily::DepthPrepass),
     (SHADOW_DEPTH, PipelineFamily::Shadow),
+    (ATMOSPHERE_LUTS, PipelineFamily::Atmosphere),
+    (ATMOSPHERE_SKY, PipelineFamily::Sky),
 ];
 
 pub(crate) fn affected_pipelines(changed: &[String]) -> Vec<(&'static str, PipelineFamily)> {
@@ -125,6 +138,9 @@ const EMBEDDED: &[(&str, &str)] = &[
     (DEPTH_PREPASS, shader_file!("depth_prepass.wgsl")),
     (SHADOW_DEPTH, shader_file!("shadow_depth.wgsl")),
     (SHADOW_SAMPLING, shader_file!("shadow.wgsl")),
+    (ATMOSPHERE_LUTS, shader_file!("atmosphere_luts.wgsl")),
+    (ATMOSPHERE, shader_file!("atmosphere.wgsl")),
+    (ATMOSPHERE_SKY, shader_file!("atmosphere_sky.wgsl")),
 ];
 
 fn embedded_source(name: &str) -> Option<&'static str> {

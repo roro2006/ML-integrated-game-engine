@@ -101,10 +101,18 @@ impl Renderer {
 
         // Depth is stored only when a later pass loads it; otherwise the store
         // is wasted bandwidth, which tiled integrated GPUs feel most.
-        let depth_is_read_later = debug_vertices.is_some();
+        // The sky reads the scene's depth after the lit pass, and debug
+        // lines after the sky.
+        let depth_is_read_later = debug_vertices.is_some() || frame.sky.is_some();
         if !self.shadows.cascades.is_empty() {
             graph.add_pass("shadow", &[], &[atlas], move |context| {
                 self.shadow_pass(context, atlas, frame, plan)
+            });
+        }
+        if frame.sky.is_some() {
+            graph.add_pass("sky-view", &[], &[], move |context| {
+                self.sky.record_view(&mut context.encoder);
+                Ok(())
             });
         }
         graph.add_pass("depth-prepass", &[], &[depth], move |context| {
@@ -113,6 +121,12 @@ impl Renderer {
         graph.add_pass("lit", &[depth, atlas], &[hdr, depth], move |context| {
             self.lit_pass(context, hdr, depth, depth_is_read_later, frame, plan)
         });
+        if frame.sky.is_some() {
+            let debug_reads_depth = debug_vertices.is_some();
+            graph.add_pass("sky", &[depth, hdr], &[hdr], move |context| {
+                self.sky_pass(context, hdr, depth, debug_reads_depth)
+            });
+        }
         if frame.post.auto_exposure.is_some() {
             graph.add_pass("exposure-histogram", &[hdr], &[], move |context| {
                 self.exposure_pass(context, hdr, ExposureStep::Histogram)
@@ -413,6 +427,47 @@ impl Renderer {
             pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..mesh.index_count, 0, 0..1);
         }
+        Ok(())
+    }
+
+    /// Draws the sky where the scene left the far plane (D3).
+    fn sky_pass(
+        &self,
+        context: &mut PassContext,
+        hdr: ResourceId,
+        depth: ResourceId,
+        keep_depth: bool,
+    ) -> Result<(), String> {
+        let color_view = context.view(hdr)?;
+        let depth_view = context.view(depth)?;
+        let mut pass = context.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("sky"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &color_view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: if keep_depth {
+                        wgpu::StoreOp::Store
+                    } else {
+                        wgpu::StoreOp::Discard
+                    },
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        self.sky.draw(&mut pass);
         Ok(())
     }
 

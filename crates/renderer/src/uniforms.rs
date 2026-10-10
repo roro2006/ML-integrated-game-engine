@@ -100,7 +100,7 @@ fn write_mat4(out: &mut [u8], offset: usize, value: &[[f32; 4]; 4]) {
 
 type Mat4 = [[f32; 4]; 4];
 
-const IDENTITY: Mat4 = [
+pub(crate) const IDENTITY: Mat4 = [
     [1.0, 0.0, 0.0, 0.0],
     [0.0, 1.0, 0.0, 0.0],
     [0.0, 0.0, 1.0, 0.0],

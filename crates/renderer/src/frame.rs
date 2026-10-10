@@ -435,6 +435,38 @@ pub struct RenderFrame {
     pub debug_lines: Vec<DebugVertex>,
     /// Exposure and tonemapping for this frame.
     pub post: PostSettings,
+    /// The physically based sky behind the scene (D3). `None` leaves the
+    /// clear colour, as before the sky existed.
+    pub sky: Option<Sky>,
+}
+
+/// The sky and its sun for one frame.
+///
+/// Separate from [`DirectionalLight`] because the two part ways: after
+/// sunset the key light can be the moon while the sky still shows the sun's
+/// afterglow from below the horizon. The engine's time of day sets both.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Sky {
+    /// Unit direction to the sun. Below the horizon is allowed (twilight).
+    pub sun_direction: [f32; 3],
+    /// The sun's illuminance above the atmosphere, linear RGB, in the scene's
+    /// light units: `PI` lights a white surface facing it to about 1, like a
+    /// `DirectionalLight` of intensity 1 does through the PBR shader.
+    pub sun_illuminance: [f32; 3],
+    /// The sun disc's angular radius in radians. The real sun is 0.00467;
+    /// games often draw it larger.
+    pub sun_angular_radius: f32,
+}
+
+impl Default for Sky {
+    /// A sun high in the afternoon, in the default key light's direction.
+    fn default() -> Self {
+        Self {
+            sun_direction: DirectionalLight::default().direction,
+            sun_illuminance: [std::f32::consts::PI; 3],
+            sun_angular_radius: 0.00467,
+        }
+    }
 }
 
 const IDENTITY: [[f32; 4]; 4] = [
@@ -456,6 +488,7 @@ impl RenderFrame {
             draws: Vec::new(),
             debug_lines: Vec::new(),
             post: PostSettings::default(),
+            sky: None,
         }
     }
 

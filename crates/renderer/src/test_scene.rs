@@ -1451,3 +1451,57 @@ mod shadows {
         );
     }
 }
+
+/// D3 acceptance: the sky brightens steadily as the sun climbs from below
+/// the horizon to high noon, with no jump between neighbouring times.
+#[test]
+#[ignore = "requires a GPU adapter and driver"]
+fn the_sky_brightens_smoothly_as_the_sun_climbs() {
+    let mut renderer = headless();
+    let view = look_at([0.0, 2.0, 0.0], [10.0, 4.0, 3.0], [0.0, 1.0, 0.0]);
+    let projection = perspective(90f32.to_radians(), WIDTH as f32 / HEIGHT as f32, 0.1, 100.0);
+    let steps = 48;
+    let means: Vec<f64> = (0..=steps)
+        .map(|step| {
+            let elevation = -0.2 + 1.2 * step as f32 / steps as f32;
+            let mut frame = RenderFrame::new(mul(&projection, &view), Color::BLACK);
+            frame.camera_position = [0.0, 2.0, 0.0];
+            frame.sky = Some(crate::Sky {
+                sun_direction: [elevation.cos(), elevation.sin(), 0.0],
+                ..crate::Sky::default()
+            });
+            let image = renderer.render_to_image(&frame).expect("renders");
+            let total: u64 = image
+                .rgba8
+                .chunks_exact(4)
+                .map(|p| u64::from(p[0]) + u64::from(p[1]) + u64::from(p[2]))
+                .sum();
+            total as f64 / (WIDTH * HEIGHT) as f64
+        })
+        .collect();
+    let steps_up: Vec<f64> = means.windows(2).map(|pair| pair[1] - pair[0]).collect();
+    let largest = steps_up
+        .iter()
+        .fold(0.0_f64, |largest, change| largest.max(change.abs()));
+    assert!(
+        means[steps] > means[0] + 100.0,
+        "noon is far brighter than night: {means:.1?}"
+    );
+    // Sunrise is a steep S-curve, so steps are not alike; a discontinuity
+    // shows as a step far from the average of the steps either side of it.
+    for (index, neighbours) in steps_up.windows(3).enumerate() {
+        let expected = (neighbours[0] + neighbours[2]) / 2.0;
+        assert!(
+            (neighbours[1] - expected).abs() < 0.35 * largest,
+            "the sky jumps at step {}: {:.2} between {:.2} and {:.2}: {means:.1?}",
+            index + 1,
+            neighbours[1],
+            neighbours[0],
+            neighbours[2]
+        );
+    }
+    // A high sun moving away from the view may dim it a little, never much.
+    for (index, &change) in steps_up.iter().enumerate() {
+        assert!(change > -1.0, "the sky darkens at step {index}: {means:.1?}");
+    }
+}
