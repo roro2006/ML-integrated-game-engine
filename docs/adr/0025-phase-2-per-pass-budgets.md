@@ -1,6 +1,6 @@
 # ADR-0025: Per-pass GPU budgets for phase 2 lighting
 
-- Status: Proposed (awaiting the owner, at the M18 exit gate)
+- Status: Accepted (owner, at the M18 exit gate, 2026-10-10)
 - Date: 2026-10-10
 - Relates to: ADR-0019 (frame budget), ADR-0024 (lighting path), renderer workstream B7
 

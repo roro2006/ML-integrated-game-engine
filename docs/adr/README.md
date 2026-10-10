@@ -30,7 +30,7 @@ accepted ADR: supersede it with a new one.
 | [0022](0022-skill-based-progression.md) | Skill-based progression | Accepted (amends ADR-0015 and ADR-0018) |
 | [0023](0023-device-limits-and-optional-features.md) | Device limits and optional GPU features | Accepted (amends ADR-0003) |
 | [0024](0024-lighting-path-clustered-forward-plus.md) | Lighting path is clustered forward+ after a depth prepass | Accepted (amends ADR-0019) |
-| [0025](0025-phase-2-per-pass-budgets.md) | Per-pass GPU budgets for phase 2 lighting | Proposed |
+| [0025](0025-phase-2-per-pass-budgets.md) | Per-pass GPU budgets for phase 2 lighting | Accepted |
 
 ## Approved dependencies
 
