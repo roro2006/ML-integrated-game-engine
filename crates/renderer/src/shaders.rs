@@ -39,6 +39,9 @@ pub(crate) const EXPOSURE_HISTOGRAM: &str = "exposure_histogram.wgsl";
 /// Physically based metallic-roughness material.
 pub(crate) const PBR_LIT: &str = "pbr_lit.wgsl";
 
+/// Shadow sampling for the lit shaders. Included, never compiled alone.
+pub(crate) const SHADOW_SAMPLING: &str = "shadow.wgsl";
+
 /// The directional light's shadow cascades (C1).
 pub(crate) const SHADOW_DEPTH: &str = "shadow_depth.wgsl";
 
@@ -121,6 +124,7 @@ const EMBEDDED: &[(&str, &str)] = &[
     (BRDF, shader_file!("brdf.wgsl")),
     (DEPTH_PREPASS, shader_file!("depth_prepass.wgsl")),
     (SHADOW_DEPTH, shader_file!("shadow_depth.wgsl")),
+    (SHADOW_SAMPLING, shader_file!("shadow.wgsl")),
 ];
 
 fn embedded_source(name: &str) -> Option<&'static str> {
@@ -666,8 +670,11 @@ mod tests {
     fn without_a_shader_dir_the_embedded_source_is_used() {
         let mut library = ShaderLibrary::new(None);
         assert_eq!(library.hot_reload_dir(), None);
-        let source = library.source(LIT).expect("embedded source is always available");
-        assert_eq!(source, normalised(embedded_source(LIT).unwrap()));
+        // A shader with no includes, so its expanded source is the file.
+        let source = library
+            .source(DEPTH_PREPASS)
+            .expect("embedded source is always available");
+        assert_eq!(source, normalised(embedded_source(DEPTH_PREPASS).unwrap()));
         assert!(library.changed().is_empty());
     }
 
@@ -805,8 +812,11 @@ mod tests {
         let mut library = ShaderLibrary::new(Some(dir.0.clone()));
 
         assert_eq!(library.hot_reload_dir(), None);
-        let source = library.source(LIT).expect("embedded source is always available");
-        assert_eq!(source, normalised(embedded_source(LIT).unwrap()));
+        // A shader with no includes, so its expanded source is the file.
+        let source = library
+            .source(DEPTH_PREPASS)
+            .expect("embedded source is always available");
+        assert_eq!(source, normalised(embedded_source(DEPTH_PREPASS).unwrap()));
         assert!(library.changed().is_empty());
     }
 }

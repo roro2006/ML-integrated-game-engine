@@ -57,6 +57,10 @@ struct DrawData {
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(1) @binding(0) var<uniform> draw: DrawData;
 
+// The directional light's cascaded shadows (C1); flat materials receive
+// them so the slice reads the same as PBR content under the sun.
+#include "shadow.wgsl"
+
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
@@ -76,6 +80,7 @@ struct VertexOutput {
     // Flat within a face, because a low-poly face's vertices all carry the
     // same colour; interpolated anyway, so nothing breaks if they do not.
     @location(2) color: vec3<f32>,
+    @location(3) world_position: vec3<f32>,
 }
 
 @vertex
@@ -87,6 +92,7 @@ fn vs_main(vertex: VertexInput) -> VertexOutput {
     output.world_normal = (draw.normal_matrix * vec4<f32>(vertex.normal, 0.0)).xyz;
     output.uv = vertex.uv;
     output.color = vertex.color;
+    output.world_position = world_position.xyz;
     return output;
 }
 
@@ -98,7 +104,8 @@ fn fs_main(fragment: VertexOutput) -> @location(0) vec4<f32> {
     let to_light = normalize(globals.light_direction.xyz);
 
     let lambert = max(dot(normal, to_light), 0.0);
-    let direct = globals.light_color.rgb * globals.light_color.w * lambert;
+    let shadow = directional_shadow(fragment.world_position, normal);
+    let direct = globals.light_color.rgb * globals.light_color.w * lambert * shadow;
     let ambient = globals.ambient_color.rgb * globals.ambient_color.w;
 
     // The tint multiplies the painted vertex colour; white vertices make this

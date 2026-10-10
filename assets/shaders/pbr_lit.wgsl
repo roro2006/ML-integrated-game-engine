@@ -62,6 +62,9 @@ struct MaterialParams {
 @group(2) @binding(4) var emissive_texture: texture_2d<f32>;
 @group(2) @binding(5) var material_sampler: sampler;
 
+// The directional light's cascaded shadows (C1).
+#include "shadow.wgsl"
+
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
@@ -149,7 +152,11 @@ fn fs_main(fragment: VertexOutput, @builtin(front_facing) front_facing: bool) ->
     let to_view = normalize(globals.camera_position.xyz - fragment.world_position);
     let to_light = normalize(globals.light_direction.xyz);
     let irradiance = globals.light_color.rgb * globals.light_color.w * PI;
-    var lit = brdf_direct(normal, to_view, to_light, albedo, metallic, roughness, irradiance);
+    // The geometric normal, facing the viewer's side, places the shadow
+    // lookup; a normal map tilts shading, not where the surface is.
+    let geometric = normalize(fragment.world_normal) * select(-1.0, 1.0, front_facing);
+    let shadow = directional_shadow(fragment.world_position, geometric);
+    var lit = brdf_direct(normal, to_view, to_light, albedo, metallic, roughness, irradiance * shadow);
     lit += ambient_flat(albedo, metallic, globals.ambient_color.rgb * globals.ambient_color.w, occlusion);
     lit += emitted;
 

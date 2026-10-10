@@ -326,7 +326,7 @@ enum BuiltShader {
     Exposure(post::exposure::ExposureResources),
     Mips(texture::MipGenerator),
     DepthPrepass(wgpu::RenderPipeline),
-    Shadow(wgpu::RenderPipeline),
+    Shadow(wgpu::RenderPipeline, wgpu::RenderPipeline),
 }
 
 /// Owns the GPU device, queue, and output (a window's swapchain or an
@@ -633,12 +633,12 @@ impl Renderer {
                 &ShadowSettings::default(),
                 device.limits().max_texture_dimension_2d,
             );
-            shadow_pass::Shadows::new(&device, &draw_layout, &source, layout).map_err(|message| {
-                RenderError::ShaderCompile {
+            shadow_pass::Shadows::new(&device, &draw_layout, &material_layout, &source, layout).map_err(
+                |message| RenderError::ShaderCompile {
                     shader: shaders::SHADOW_DEPTH.to_owned(),
                     message,
-                }
-            })?
+                },
+            )?
         };
         let globals_buffer = pipeline::create_globals_buffer(&device);
         let globals_bind_group =
@@ -1000,18 +1000,24 @@ impl Renderer {
         })
     }
 
-    fn build_shadow_pipeline(&mut self) -> Result<wgpu::RenderPipeline, RenderError> {
+    fn build_shadow_pipelines(
+        &mut self,
+    ) -> Result<(wgpu::RenderPipeline, wgpu::RenderPipeline), RenderError> {
         let source = self
             .shaders
             .source(shaders::SHADOW_DEPTH)
             .map_err(RenderError::Shader)?
             .into_owned();
-        shadow_pass::create_pipeline(&self.device, &self.shadows.pipeline_layout, &source).map_err(
-            |message| RenderError::ShaderCompile {
-                shader: shaders::SHADOW_DEPTH.to_owned(),
-                message,
-            },
+        shadow_pass::create_pipelines(
+            &self.device,
+            &self.shadows.pipeline_layout,
+            &self.shadows.masked_pipeline_layout,
+            &source,
         )
+        .map_err(|message| RenderError::ShaderCompile {
+            shader: shaders::SHADOW_DEPTH.to_owned(),
+            message,
+        })
     }
 
     /// Fits this frame's cascades and uploads them, recreating the atlas
@@ -1099,7 +1105,10 @@ impl Renderer {
         Ok(match family {
             PipelineFamily::Lit => BuiltShader::Lit(self.build_lit_pipeline()?),
             PipelineFamily::DepthPrepass => BuiltShader::DepthPrepass(self.build_depth_prepass_pipeline()?),
-            PipelineFamily::Shadow => BuiltShader::Shadow(self.build_shadow_pipeline()?),
+            PipelineFamily::Shadow => {
+                let (plain, masked) = self.build_shadow_pipelines()?;
+                BuiltShader::Shadow(plain, masked)
+            }
             PipelineFamily::Debug => BuiltShader::Debug(self.build_debug_pipeline()?),
             PipelineFamily::Tonemap => BuiltShader::Tonemap(build_tonemap_pipeline(
                 &self.device,
@@ -1170,7 +1179,10 @@ impl Renderer {
             }
             BuiltShader::Mips(generator) => self.mips = generator,
             BuiltShader::DepthPrepass(pipeline) => self.depth_prepass_pipeline = pipeline,
-            BuiltShader::Shadow(pipeline) => self.shadows.pipeline = pipeline,
+            BuiltShader::Shadow(plain, masked) => {
+                self.shadows.pipeline = plain;
+                self.shadows.masked_pipeline = masked;
+            }
         }
     }
 

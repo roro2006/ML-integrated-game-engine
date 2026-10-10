@@ -9,7 +9,17 @@
 //   @group(0) @binding(0)  Cascade   uniform, one per cascade, dynamic offset
 //   @group(1) @binding(0)  DrawData  uniform, one per draw, dynamic offset
 //
-// Vertex buffer: the shared 64-byte layout; only the position is read.
+// The masked entry points (`vs_masked`, `fs_masked`) draw cut-out materials,
+// discarding where the base colour's alpha is below the cutoff exactly as
+// pbr_lit.wgsl does, so a leaf's shadow has the leaf's holes. They add the
+// material group, laid out as pbr_lit.wgsl declares it:
+//
+//   @group(2) @binding(0)  MaterialParams
+//   @group(2) @binding(1)  base colour texture
+//   @group(2) @binding(5)  sampler
+//
+// Vertex buffer: the shared 64-byte layout; the position, and for the masked
+// entry points the uv.
 
 struct Cascade {
     view_proj: mat4x4<f32>, // world to light clip space, depth 0..1
@@ -29,10 +39,36 @@ struct DrawData {
     flash: vec4<f32>,            // rgb = overlay colour, w = amount 0..1 (ADR-0017)
 }
 
+struct MaterialParams {
+    emissive: vec4<f32>,
+    factors: vec4<f32>,          // metallic, roughness, alpha cutoff, occlusion strength
+}
+
 @group(0) @binding(0) var<uniform> cascade: Cascade;
 @group(1) @binding(0) var<uniform> draw: DrawData;
+@group(2) @binding(0) var<uniform> material: MaterialParams;
+@group(2) @binding(1) var base_color_texture: texture_2d<f32>;
+@group(2) @binding(5) var material_sampler: sampler;
 
 @vertex
 fn vs_main(@location(0) position: vec3<f32>) -> @builtin(position) vec4<f32> {
     return cascade.view_proj * (draw.model * vec4<f32>(position, 1.0));
+}
+
+struct MaskedVertex {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+}
+
+@vertex
+fn vs_masked(@location(0) position: vec3<f32>, @location(2) uv: vec2<f32>) -> MaskedVertex {
+    return MaskedVertex(cascade.view_proj * (draw.model * vec4<f32>(position, 1.0)), uv);
+}
+
+@fragment
+fn fs_masked(vertex: MaskedVertex) {
+    let alpha = draw.base_color.w * textureSample(base_color_texture, material_sampler, vertex.uv).a;
+    if alpha < material.factors.z {
+        discard;
+    }
 }

@@ -250,6 +250,9 @@ pub(crate) struct Shadows {
     pub(crate) cascade_uniforms: CascadeUniforms,
     pub(crate) pipeline_layout: wgpu::PipelineLayout,
     pub(crate) pipeline: wgpu::RenderPipeline,
+    /// Adds the PBR material group, for cut-outs' alpha test.
+    pub(crate) masked_pipeline_layout: wgpu::PipelineLayout,
+    pub(crate) masked_pipeline: wgpu::RenderPipeline,
     /// This frame's cascades; empty when shadows are off.
     pub(crate) cascades: Vec<Cascade>,
 }
@@ -258,6 +261,7 @@ impl Shadows {
     pub(crate) fn new(
         device: &wgpu::Device,
         draw_layout: &wgpu::BindGroupLayout,
+        material_layout: &wgpu::BindGroupLayout,
         source: &str,
         layout: AtlasLayout,
     ) -> Result<Self, String> {
@@ -267,7 +271,17 @@ impl Shadows {
             bind_group_layouts: &[Some(&cascade_uniforms.layout), Some(draw_layout)],
             immediate_size: 0,
         });
-        let pipeline = create_pipeline(device, &pipeline_layout, source)?;
+        let masked_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("shadow-masked-pipeline-layout"),
+            bind_group_layouts: &[
+                Some(&cascade_uniforms.layout),
+                Some(draw_layout),
+                Some(material_layout),
+            ],
+            immediate_size: 0,
+        });
+        let (pipeline, masked_pipeline) =
+            create_pipelines(device, &pipeline_layout, &masked_pipeline_layout, source)?;
         Ok(Self {
             atlas: Atlas::new(device, layout),
             data_buffer: device.create_buffer(&wgpu::BufferDescriptor {
@@ -280,29 +294,50 @@ impl Shadows {
             cascade_uniforms,
             pipeline_layout,
             pipeline,
+            masked_pipeline_layout,
+            masked_pipeline,
             cascades: Vec::new(),
         })
     }
 }
 
-/// Compiles `source` and builds the shadow depth pipeline. `layout` is the
-/// cascade group then the draw group.
-pub(crate) fn create_pipeline(
+/// Compiles `source` and builds both shadow depth pipelines, plain and
+/// masked, together: a hot reload installs both or neither.
+pub(crate) fn create_pipelines(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
+    masked_layout: &wgpu::PipelineLayout,
     source: &str,
-) -> Result<wgpu::RenderPipeline, String> {
+) -> Result<(wgpu::RenderPipeline, wgpu::RenderPipeline), String> {
     let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(SHADOW_DEPTH),
         source: wgpu::ShaderSource::Wgsl(source.into()),
     });
-    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("shadow-depth-pipeline"),
+    let plain = create_pipeline(device, layout, &module, false);
+    let masked = create_pipeline(device, masked_layout, &module, true);
+    match block_on(scope.pop()) {
+        Some(error) => Err(error.to_string()),
+        None => Ok((plain, masked)),
+    }
+}
+
+fn create_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    module: &wgpu::ShaderModule,
+    masked: bool,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(if masked {
+            "shadow-masked-pipeline"
+        } else {
+            "shadow-depth-pipeline"
+        }),
         layout: Some(layout),
         vertex: wgpu::VertexState {
-            module: &module,
-            entry_point: Some("vs_main"),
+            module,
+            entry_point: Some(if masked { "vs_masked" } else { "vs_main" }),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             buffers: &[Some(vertex_layout())],
         },
@@ -320,14 +355,17 @@ pub(crate) fn create_pipeline(
             },
         }),
         multisample: wgpu::MultisampleState::default(),
-        fragment: None,
+        // The masked variant runs the alpha test; the plain one writes depth
+        // with no fragment stage at all.
+        fragment: masked.then(|| wgpu::FragmentState {
+            module,
+            entry_point: Some("fs_masked"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[],
+        }),
         multiview_mask: None,
         cache: None,
-    });
-    match block_on(scope.pop()) {
-        Some(error) => Err(error.to_string()),
-        None => Ok(pipeline),
-    }
+    })
 }
 
 #[cfg(test)]

@@ -1289,3 +1289,165 @@ mod showcase {
         );
     }
 }
+
+/// C1 acceptance: cascaded shadows land where the light geometry says, the
+/// open ground shows no acne or cascade seams, and cut-outs cast through
+/// their alpha.
+mod shadows {
+    use super::*;
+    use crate::{AlphaMode, Shading};
+
+    /// The pixel a world point lands on, from the frame's view-projection.
+    fn pixel_of(view_proj: &Mat4, point: Vec3) -> (u32, u32) {
+        let clip: [f32; 4] = std::array::from_fn(|row| {
+            (0..4)
+                .map(|column| view_proj[column][row] * if column == 3 { 1.0 } else { point[column] })
+                .sum()
+        });
+        let (x, y) = (clip[0] / clip[3], clip[1] / clip[3]);
+        (
+            ((x * 0.5 + 0.5) * WIDTH as f32) as u32,
+            ((0.5 - y * 0.5) * HEIGHT as f32) as u32,
+        )
+    }
+
+    fn luminance(image: &crate::Image, (x, y): (u32, u32)) -> i32 {
+        let [r, g, b, _] = image.pixel(x, y).expect("in bounds");
+        i32::from(r) + i32::from(g) + i32::from(b)
+    }
+
+    /// A grey ground under a light from -x at 45 degrees, seen from above.
+    fn sunlit_ground(renderer: &mut Renderer, half: f32) -> RenderFrame {
+        let ground_mesh = renderer.upload_mesh(&ground(half)).expect("valid");
+        let grey = renderer.create_material(&MaterialDesc {
+            base_color: [0.5, 0.5, 0.5, 1.0],
+            ..MaterialDesc::default()
+        });
+        let view = look_at([1.5, 9.0, 3.0], [1.5, 0.0, 0.0], [0.0, 1.0, 0.0]);
+        let projection = perspective(50f32.to_radians(), WIDTH as f32 / HEIGHT as f32, 0.1, 60.0);
+        let mut frame = RenderFrame::new(mul(&projection, &view), Color::BLACK);
+        frame.light = frame.light.with_direction([-1.0, 1.0, 0.0]);
+        frame.push(DrawCommand {
+            mesh: ground_mesh,
+            material: grey,
+            model: IDENTITY,
+            normal_matrix: IDENTITY,
+        });
+        frame
+    }
+
+    /// A 2 m tall box over x and z in -0.5..0.5 casts a shadow from x = 0.5
+    /// to x = 2.5 under a 45 degree light from -x.
+    #[test]
+    #[ignore = "requires a GPU adapter and driver"]
+    fn a_box_casts_its_shadow_where_the_light_geometry_puts_it() {
+        let mut renderer = headless();
+        let mut frame = sunlit_ground(&mut renderer, 10.0);
+        let cube = renderer.upload_mesh(&painted_cube()).expect("valid");
+        let plain = renderer.create_material(&MaterialDesc::default());
+        let mut tall = IDENTITY;
+        tall[1][1] = 2.0;
+        frame.push(DrawCommand {
+            mesh: cube,
+            material: plain,
+            model: tall,
+            normal_matrix: IDENTITY,
+        });
+        let image = renderer.render_to_image(&frame).expect("renders");
+
+        let at = |x: f32| luminance(&image, pixel_of(&frame.view_proj, [x, 0.0, 0.0]));
+        let shadowed = [at(1.0), at(1.8), at(2.3)];
+        let lit = [at(2.7), at(3.5), at(5.0)];
+        for value in shadowed {
+            assert!((value - shadowed[0]).abs() <= 3, "uniform shadow: {shadowed:?}");
+        }
+        for value in lit {
+            assert!((value - lit[0]).abs() <= 3, "uniform light: {lit:?}");
+        }
+        assert!(
+            lit[0] > shadowed[0] + 60,
+            "0.2 m inside the edge is shadowed and 0.2 m outside is lit: {shadowed:?} against {lit:?}"
+        );
+        let behind = luminance(&image, pixel_of(&frame.view_proj, [-2.0, 0.0, 0.0]));
+        assert!((behind - lit[0]).abs() <= 3, "the light side of the box is lit");
+    }
+
+    /// Every ground pixel has the same normal and light, so any spread in
+    /// their colours is acne or a seam between cascades.
+    #[test]
+    #[ignore = "requires a GPU adapter and driver"]
+    fn open_ground_has_no_acne_or_cascade_seams_out_to_the_horizon() {
+        let mut renderer = headless();
+        let ground_mesh = renderer.upload_mesh(&ground(80.0)).expect("valid");
+        let grey = renderer.create_material(&MaterialDesc {
+            base_color: [0.5, 0.5, 0.5, 1.0],
+            ..MaterialDesc::default()
+        });
+        // Low over the ground and looking along it, so the view crosses every
+        // cascade; a grazing light is where acne shows first.
+        let view = look_at([0.0, 1.7, 0.0], [0.0, 0.0, -20.0], [0.0, 1.0, 0.0]);
+        let projection = perspective(60f32.to_radians(), WIDTH as f32 / HEIGHT as f32, 0.1, 100.0);
+        let mut frame = RenderFrame::new(mul(&projection, &view), Color::BLACK);
+        frame.light = frame.light.with_direction([0.6, 0.25, -0.3]);
+        frame.push(DrawCommand {
+            mesh: ground_mesh,
+            material: grey,
+            model: IDENTITY,
+            normal_matrix: IDENTITY,
+        });
+        let image = renderer.render_to_image(&frame).expect("renders");
+
+        let ground_pixels: Vec<i32> = (0..HEIGHT)
+            .flat_map(|y| (0..WIDTH).map(move |x| (x, y)))
+            .map(|pixel| luminance(&image, pixel))
+            .filter(|&value| value > 0)
+            .collect();
+        assert!(
+            ground_pixels.len() > (WIDTH * HEIGHT / 3) as usize,
+            "the ground fills the view"
+        );
+        let (low, high) = ground_pixels
+            .iter()
+            .fold((i32::MAX, i32::MIN), |(low, high), &value| {
+                (low.min(value), high.max(value))
+            });
+        assert!(high - low <= 3, "ground luminance spans {low}..={high}");
+    }
+
+    /// A cut-out board hovering over the ground: fully cut away it casts
+    /// nothing, solid it casts its square. The sampled ground is not behind
+    /// the board from the camera, so only the shadow can darken it.
+    #[test]
+    #[ignore = "requires a GPU adapter and driver"]
+    fn a_cut_out_casts_a_shadow_only_where_it_is_solid() {
+        let mut values = Vec::new();
+        for alpha in [0.0, 1.0] {
+            let mut renderer = headless();
+            let mut frame = sunlit_ground(&mut renderer, 10.0);
+            let board = renderer.upload_mesh(&ground(0.75)).expect("valid");
+            let leaf = renderer.create_material(&MaterialDesc {
+                base_color: [0.2, 0.6, 0.2, alpha],
+                shading: Shading::Pbr,
+                alpha: AlphaMode::Mask { cutoff: 0.5 },
+                ..MaterialDesc::default()
+            });
+            // Raised 1 m over (1, -3): the 45 degree light from -x puts its
+            // shadow 1 m along +x, around (2, 0, -3), which the camera sees
+            // past the board's edge rather than through it.
+            let mut raised = IDENTITY;
+            raised[3] = [1.0, 1.0, -3.0, 1.0];
+            frame.push(DrawCommand {
+                mesh: board,
+                material: leaf,
+                model: raised,
+                normal_matrix: IDENTITY,
+            });
+            let image = renderer.render_to_image(&frame).expect("renders");
+            values.push(luminance(&image, pixel_of(&frame.view_proj, [2.0, 0.0, -3.0])));
+        }
+        assert!(
+            values[0] > values[1] + 60,
+            "a cut-away board casts no shadow, a solid one does: {values:?}"
+        );
+    }
+}

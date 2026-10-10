@@ -278,8 +278,9 @@ impl Renderer {
     }
 
     /// Draws every cascade into its viewport of the atlas (C1). Each draw is
-    /// culled per cascade by its bounding sphere. Cut-outs are skipped until
-    /// the masked shadow variant lands (M18 slice 3).
+    /// culled per cascade by its bounding sphere. Opaque draws go first with
+    /// the depth-only pipeline; cut-outs follow with the masked one, which
+    /// runs their alpha test.
     fn shadow_pass(
         &self,
         context: &mut PassContext,
@@ -305,47 +306,56 @@ impl Renderer {
         });
         let shadows = &self.shadows;
         let layout = shadows.atlas.layout;
-        pass.set_pipeline(&shadows.pipeline);
         let stride = self.draw_stride as usize;
         for (index, cascade) in shadows.cascades.iter().enumerate() {
             let index = u32::try_from(index).map_err(|_| "too many cascades".to_owned())?;
             let [x, y, width, height] = layout.viewport(index);
             pass.set_viewport(x, y, width, height, 0.0, 1.0);
-            pass.set_bind_group(
-                0,
-                &shadows.cascade_uniforms.bind_group,
-                &[index * shadows.cascade_uniforms.stride],
-            );
-            for planned in &plan.draws {
-                let Some(draw) = frame.draws.get(planned.draw) else {
-                    continue;
-                };
-                let is_cut_out = self
-                    .materials
-                    .get(draw.material)
-                    .and_then(|material| material.pbr.as_ref())
-                    .is_some_and(|binding| binding.key.alpha_mask);
-                if is_cut_out {
-                    continue;
-                }
-                let Some(mesh) = self.meshes.get_by_index(planned.mesh) else {
-                    continue;
-                };
-                let (centre, radius) = crate::shadow_pass::world_sphere(
-                    &draw.model,
-                    mesh.bounds.center(),
-                    mesh.bounds.half_extents(),
+            for masked in [false, true] {
+                pass.set_pipeline(if masked {
+                    &shadows.masked_pipeline
+                } else {
+                    &shadows.pipeline
+                });
+                pass.set_bind_group(
+                    0,
+                    &shadows.cascade_uniforms.bind_group,
+                    &[index * shadows.cascade_uniforms.stride],
                 );
-                if !crate::shadow_pass::may_cast_into(cascade, layout.resolution, centre, radius) {
-                    continue;
+                for planned in &plan.draws {
+                    let Some(draw) = frame.draws.get(planned.draw) else {
+                        continue;
+                    };
+                    let cut_out = self
+                        .materials
+                        .get(draw.material)
+                        .and_then(|material| material.pbr.as_ref())
+                        .filter(|binding| binding.key.alpha_mask);
+                    if cut_out.is_some() != masked {
+                        continue;
+                    }
+                    let Some(mesh) = self.meshes.get_by_index(planned.mesh) else {
+                        continue;
+                    };
+                    let (centre, radius) = crate::shadow_pass::world_sphere(
+                        &draw.model,
+                        mesh.bounds.center(),
+                        mesh.bounds.half_extents(),
+                    );
+                    if !crate::shadow_pass::may_cast_into(cascade, layout.resolution, centre, radius) {
+                        continue;
+                    }
+                    let Ok(offset) = u32::try_from(planned.slot * stride) else {
+                        continue;
+                    };
+                    if let Some(binding) = cut_out {
+                        pass.set_bind_group(2, &binding.bind_group, &[]);
+                    }
+                    pass.set_bind_group(1, &self.draw_bind_group, &[offset]);
+                    pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                    pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..mesh.index_count, 0, 0..1);
                 }
-                let Ok(offset) = u32::try_from(planned.slot * stride) else {
-                    continue;
-                };
-                pass.set_bind_group(1, &self.draw_bind_group, &[offset]);
-                pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-                pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..mesh.index_count, 0, 0..1);
             }
         }
         Ok(())
