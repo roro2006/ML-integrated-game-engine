@@ -42,7 +42,8 @@ The integrated dense runs vary between runs (the depth prepass alternates betwee
 2. **The depth prepass stays and runs first in every frame.** Without it, overdraw multiplies the shading cost 3 to 12 times on these scenes. The forward pass then tests depth with `LessEqual` and does not write it.
 3. **Light culling is a compute pass over a cluster grid**, as prototyped. Each cluster list reserves `light_count + 1` words, so no light can overflow. The grid, the depth slicing (exponential, per C5) and a per-cluster cap are set when C5 brings point and spot lights; the CPU reference in `clustered.rs` keeps the culling test conservative.
 4. **Screen-space consumers get a thin G-buffer from the prepass, not a full one.** C4 (GTAO) and E2 (TAA) need depth, normals and velocity. The prepass gains normal and velocity targets when those items start, rather than paying for albedo and material targets every frame now.
-5. **Deferred is not kept in `main`.** The prototype shaders (`gbuffer.wgsl`, `deferred_lighting.wgsl`) stay only as long as the benchmark that measures them. They leave with the harness once production integration lands, as the workstream asks ("keep the other as a dead branch").
+5. **Deferred never reaches production code.** Its prototype shaders (`gbuffer.wgsl`, `deferred_lighting.wgsl`) are compiled only by the test-only benchmark, which stays so this decision can be measured again with the same scene. No renderer path or setting selects them.
+6. **Integration, as built.** A `depth-prepass` graph pass runs before `lit` and writes the depth of every draw except cut-out (alpha-mask) materials. The lit and PBR pipelines test `LessEqual` and keep depth writes on, so cut-outs still occlude what is behind them. All three vertex stages compute the clip position with the same expression and mark it `@invariant`. The golden reference scene is unchanged, so the single-pass path needs no switch to remain selectable.
 
 ## Consequences
 
