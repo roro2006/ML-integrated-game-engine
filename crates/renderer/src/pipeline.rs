@@ -184,19 +184,26 @@ pub(crate) fn globals_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
             },
             read_only_storage(11),
             read_only_storage(12),
-            // Screen-space ambient occlusion (C4), half resolution.
-            wgpu::BindGroupLayoutEntry {
-                binding: 13,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            },
+            // Screen-space ambient occlusion (C4), half resolution, and
+            // contact shadows (C4), full resolution.
+            screen_result(13),
+            screen_result(14),
         ],
     })
+}
+
+/// A screen-space result the lit shaders read: occlusion, contact shadows.
+fn screen_result(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        },
+        count: None,
+    }
 }
 
 fn read_only_storage(binding: u32) -> wgpu::BindGroupLayoutEntry {
@@ -338,10 +345,11 @@ pub(crate) struct GlobalsInputs<'a> {
     pub(crate) brdf_lut: &'a wgpu::TextureView,
     pub(crate) clusters: &'a crate::light_clusters::LightClusters,
     pub(crate) ambient_occlusion: &'a wgpu::TextureView,
+    pub(crate) contact_shadows: &'a wgpu::TextureView,
 }
 
 /// Group 0's bind group. Rebuilt when the shadow atlas, the atmosphere's
-/// resources, the light buffers or the occlusion result are recreated.
+/// resources, the light buffers, or a screen-space result is recreated.
 pub(crate) fn create_globals_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
@@ -357,6 +365,7 @@ pub(crate) fn create_globals_bind_group(
         brdf_lut,
         clusters,
         ambient_occlusion,
+        contact_shadows,
     } = inputs;
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("globals-bind-group"),
@@ -421,6 +430,10 @@ pub(crate) fn create_globals_bind_group(
             wgpu::BindGroupEntry {
                 binding: 13,
                 resource: wgpu::BindingResource::TextureView(ambient_occlusion),
+            },
+            wgpu::BindGroupEntry {
+                binding: 14,
+                resource: wgpu::BindingResource::TextureView(contact_shadows),
             },
         ],
     })

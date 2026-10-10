@@ -12,13 +12,13 @@ use crate::{
 
 const IDENTITY: [[f32; 4]; 4] = Mat4::IDENTITY.to_cols_array_2d();
 
-fn headless(width: u32, height: u32) -> Renderer {
+pub(crate) fn headless(width: u32, height: u32) -> Renderer {
     Renderer::headless(width, height, RendererConfig::default())
         .expect("these tests are ignored unless a GPU adapter exists")
 }
 
 /// An axis-aligned box with a face per side, normals out.
-fn cuboid(low: Vec3, high: Vec3) -> MeshData {
+pub(crate) fn cuboid(low: Vec3, high: Vec3) -> MeshData {
     // Each face: its normal, then its four corners counter-clockwise seen
     // from outside.
     let faces: [(Vec3, [Vec3; 4]); 6] = [
@@ -91,7 +91,7 @@ fn cuboid(low: Vec3, high: Vec3) -> MeshData {
 }
 
 /// A vertical quad in the plane z = `z`, facing +Z, for cut-outs.
-fn upright_quad(half_width: f32, height: f32, z: f32) -> MeshData {
+pub(crate) fn upright_quad(half_width: f32, height: f32, z: f32) -> MeshData {
     MeshData {
         positions: vec![
             [-half_width, 0.0, z],
@@ -106,13 +106,18 @@ fn upright_quad(half_width: f32, height: f32, z: f32) -> MeshData {
     }
 }
 
-fn camera(eye: Vec3, target: Vec3, aspect: f32) -> [[f32; 4]; 4] {
+pub(crate) fn camera(eye: Vec3, target: Vec3, aspect: f32) -> [[f32; 4]; 4] {
     let view = glam::camera::rh::view::look_at_mat4(eye, target, Vec3::Y);
     let projection = glam::camera::rh::proj::directx::perspective(50_f32.to_radians(), aspect, 0.1, 100.0);
     (projection * view).to_cols_array_2d()
 }
 
-fn draw(frame: &mut RenderFrame, renderer: &mut Renderer, mesh: &MeshData, material: MaterialHandle) {
+pub(crate) fn draw(
+    frame: &mut RenderFrame,
+    renderer: &mut Renderer,
+    mesh: &MeshData,
+    material: MaterialHandle,
+) {
     let mesh = renderer.upload_mesh(mesh).expect("valid");
     frame.push(DrawCommand {
         mesh,
@@ -163,52 +168,66 @@ struct Occlusion {
     visibility: Vec<f32>,
 }
 
+/// A texture's texels, `bytes_per_texel` each, row by row without padding.
+pub(crate) fn read_texels(renderer: &Renderer, texture: &wgpu::Texture, bytes_per_texel: u32) -> Vec<u8> {
+    let (width, height) = (texture.width(), texture.height());
+    let bytes_per_row = (width * bytes_per_texel).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+        * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let buffer = renderer.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("screen-result-readback"),
+        size: u64::from(bytes_per_row) * u64::from(height),
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let mut encoder = renderer
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+    encoder.copy_texture_to_buffer(
+        texture.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(bytes_per_row),
+                rows_per_image: Some(height),
+            },
+        },
+        texture.size(),
+    );
+    renderer.queue.submit(std::iter::once(encoder.finish()));
+    let (sender, receiver) = std::sync::mpsc::channel();
+    buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| {
+        let _ = sender.send(result);
+    });
+    renderer
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .expect("the device finishes");
+    receiver.recv().expect("map callback").expect("buffer maps");
+    let mapped = buffer.get_mapped_range(..).expect("mapped");
+    mapped
+        .chunks_exact(bytes_per_row as usize)
+        .flat_map(|row| row[..(width * bytes_per_texel) as usize].iter().copied())
+        .collect()
+}
+
+/// The pixel `point` lands on, in a target of `width` by `height`.
+pub(crate) fn pixel_of(frame: &RenderFrame, point: Vec3, width: u32, height: u32) -> (u32, u32) {
+    let ndc = Mat4::from_cols_array_2d(&frame.view_proj).project_point3(point);
+    let x = ((ndc.x * 0.5 + 0.5) * width as f32) as u32;
+    let y = ((0.5 - ndc.y * 0.5) * height as f32) as u32;
+    assert!(x < width && y < height, "{point} is off screen");
+    (x, y)
+}
+
 impl Occlusion {
     fn read(renderer: &Renderer) -> Self {
         let texture = renderer.ambient_occlusion.texture();
         let (width, height) = (texture.width(), texture.height());
-        let bytes_per_row =
-            (width * 8).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-        let buffer = renderer.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("occlusion-readback"),
-            size: u64::from(bytes_per_row) * u64::from(height),
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let mut encoder = renderer
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        encoder.copy_texture_to_buffer(
-            texture.as_image_copy(),
-            wgpu::TexelCopyBufferInfo {
-                buffer: &buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(bytes_per_row),
-                    rows_per_image: Some(height),
-                },
-            },
-            texture.size(),
-        );
-        renderer.queue.submit(std::iter::once(encoder.finish()));
-        let (sender, receiver) = std::sync::mpsc::channel();
-        buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| {
-            let _ = sender.send(result);
-        });
-        renderer
-            .device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .expect("the device finishes");
-        receiver.recv().expect("map callback").expect("buffer maps");
-        let mapped = buffer.get_mapped_range(..).expect("mapped");
         let half = crate::atmosphere::luts::tests::half_to_f32;
-        let visibility = mapped
-            .chunks_exact(bytes_per_row as usize)
-            .flat_map(|row| {
-                row[..width as usize * 8]
-                    .chunks_exact(8)
-                    .map(|texel| half(u16::from_le_bytes([texel[0], texel[1]])))
-            })
+        let visibility = read_texels(renderer, texture, 8)
+            .chunks_exact(8)
+            .map(|texel| half(u16::from_le_bytes([texel[0], texel[1]])))
             .collect();
         Self {
             width,
@@ -219,16 +238,13 @@ impl Occlusion {
 
     /// Visibility where `point` lands on screen.
     fn at(&self, frame: &RenderFrame, point: Vec3) -> f32 {
-        let ndc = Mat4::from_cols_array_2d(&frame.view_proj).project_point3(point);
-        let x = ((ndc.x * 0.5 + 0.5) * self.width as f32) as u32;
-        let y = ((0.5 - ndc.y * 0.5) * self.height as f32) as u32;
-        assert!(x < self.width && y < self.height, "{point} is off screen");
+        let (x, y) = pixel_of(frame, point, self.width, self.height);
         self.visibility[(y * self.width + x) as usize]
     }
 }
 
 /// Pass names in recorded order, from the graph dump's "  0 name: ..." lines.
-fn pass_names(dump: &str) -> Vec<&str> {
+pub(crate) fn pass_names(dump: &str) -> Vec<&str> {
     dump.lines()
         .take_while(|line| !line.starts_with("resources"))
         .filter_map(|line| {

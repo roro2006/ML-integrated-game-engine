@@ -2,11 +2,9 @@
 //! depth prepass and its normal target, a depth-aware spatial denoise, and
 //! the persistent result the lit shaders read through group 0.
 //!
-//! The result lives outside the render graph's pool, like the shadow atlas,
-//! because group 0 binds it for the whole renderer's life. With occlusion
-//! off the trace and denoise are not declared at all, and the result is
-//! cleared once to "fully open", so ambient light is exactly as before and
-//! the frame pays nothing.
+//! The result is a [`ScreenResult`]: with occlusion off the trace and
+//! denoise are not declared at all, and it is cleared once to "fully open",
+//! so ambient light is exactly as before and the frame pays nothing.
 //!
 //! `gtao.wgsl` holds the method; [`side_visibility`] and [`open_slice`] are
 //! the CPU mirrors of its slice integral that the tests hold it to.
@@ -14,6 +12,7 @@
 use crate::block_on::block_on;
 use crate::frame::{AmbientOcclusion, RenderFrame};
 use crate::graph::TransientDesc;
+use crate::screen_result::ScreenResult;
 use crate::shaders::GTAO;
 
 /// The format of both occlusion targets: visibility, and the traced point's
@@ -134,17 +133,23 @@ pub(crate) fn create_pipelines(device: &wgpu::Device, source: &str) -> Result<Ao
     }
 }
 
+/// "No occlusion": visibility 1 at distance 0, which no surface matches, so
+/// the lit shaders' upsample falls back to its plain blend of ones
+/// (ambient_occlusion.wgsl).
+const OPEN: wgpu::Color = wgpu::Color {
+    r: 1.0,
+    g: 0.0,
+    b: 0.0,
+    a: 1.0,
+};
+
 /// The occlusion result group 0 binds, and what produces it.
 #[derive(Debug)]
 pub(crate) struct AmbientOcclusionResources {
     pub(crate) pipelines: AoPipelines,
     params: wgpu::Buffer,
-    texture: wgpu::Texture,
-    pub(crate) view: wgpu::TextureView,
-    /// The result's size: half the output's.
-    size: (u32, u32),
-    /// Whether the result holds "fully open" rather than a trace.
-    open: bool,
+    /// Half the output's size.
+    result: ScreenResult,
     /// Whether this frame traces, decided before recording.
     active: bool,
 }
@@ -163,25 +168,27 @@ impl AmbientOcclusionResources {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let size = result_size(device, output_size);
-        let (texture, view) = result_texture(device, size);
-        let resources = Self {
+        let (width, height) = output_size;
+        let result = ScreenResult::new(
+            device,
+            queue,
+            "ambient-occlusion",
+            AO_FORMAT,
+            half_size(width, height),
+            OPEN,
+        );
+        Ok(Self {
             pipelines,
             params,
-            texture,
-            view,
-            size,
-            open: true,
+            result,
             active: false,
-        };
-        resources.clear(device, queue);
-        Ok(resources)
+        })
     }
 
     /// Readies this frame: resizes the result with the output, uploads the
-    /// parameters, and clears the result to "fully open" when occlusion has
-    /// just been turned off. Call before the surface is acquired. Returns
-    /// whether the result was recreated, so group 0 must be too.
+    /// parameters, and clears the result to "fully open" when occlusion is
+    /// off and it holds anything else. Call before the surface is acquired.
+    /// Returns whether the result was recreated, so group 0 must be too.
     pub(crate) fn prepare(
         &mut self,
         device: &wgpu::Device,
@@ -189,13 +196,9 @@ impl AmbientOcclusionResources {
         frame: &RenderFrame,
         output_size: (u32, u32),
     ) -> bool {
-        let size = result_size(device, output_size);
-        let recreated = size != self.size;
-        if recreated {
-            (self.texture, self.view) = result_texture(device, size);
-            self.size = size;
-            self.open = false;
-        }
+        let recreated = self
+            .result
+            .resize(device, half_size(output_size.0, output_size.1));
         let settings = frame_settings(frame);
         self.active = settings.is_some();
         match settings {
@@ -206,13 +209,9 @@ impl AmbientOcclusionResources {
                     0,
                     &params_bytes(&inverse, frame.camera_position, &settings, output_size),
                 );
-                self.open = false;
+                self.result.mark_written();
             }
-            None if !self.open => {
-                self.clear(device, queue);
-                self.open = true;
-            }
-            None => {}
+            None => self.result.make_neutral(device, queue),
         }
         recreated
     }
@@ -220,6 +219,11 @@ impl AmbientOcclusionResources {
     /// Whether this frame traces occlusion, so declares its passes.
     pub(crate) fn active(&self) -> bool {
         self.active
+    }
+
+    /// The result group 0 binds.
+    pub(crate) fn view(&self) -> &wgpu::TextureView {
+        &self.result.view
     }
 
     /// The half-resolution trace, from depth and normals into `raw`.
@@ -273,7 +277,7 @@ impl AmbientOcclusionResources {
                 },
                 wgpu::BindGroupEntry {
                     binding: 5,
-                    resource: wgpu::BindingResource::TextureView(&self.view),
+                    resource: wgpu::BindingResource::TextureView(&self.result.view),
                 },
             ],
         });
@@ -293,83 +297,15 @@ impl AmbientOcclusionResources {
         });
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, bind_group, &[]);
-        pass.dispatch_workgroups(
-            self.size.0.div_ceil(WORKGROUP),
-            self.size.1.div_ceil(WORKGROUP),
-            1,
-        );
-    }
-
-    /// Fills the result with visibility 1 at distance 0, which the lit
-    /// shaders read as "no occlusion" (ambient_occlusion.wgsl). Its own small
-    /// submission: this happens on a toggle or a resize, never per frame.
-    fn clear(&self, device: &wgpu::Device, queue: &wgpu::Queue) {
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("ao-clear"),
-        });
-        {
-            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("ao-clear"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.view,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 1.0,
-                            g: 0.0,
-                            b: 0.0,
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-        }
-        queue.submit(std::iter::once(encoder.finish()));
+        let (width, height) = self.result.size();
+        pass.dispatch_workgroups(width.div_ceil(WORKGROUP), height.div_ceil(WORKGROUP), 1);
     }
 
     /// The result texture, for tests that read it back.
     #[cfg(test)]
     pub(crate) fn texture(&self) -> &wgpu::Texture {
-        &self.texture
+        self.result.texture()
     }
-}
-
-/// The result's size for an output size, within what the device can create:
-/// an output too large to draw skips its frames, but the result must exist.
-fn result_size(device: &wgpu::Device, (width, height): (u32, u32)) -> (u32, u32) {
-    let max = device.limits().max_texture_dimension_2d;
-    let (width, height) = half_size(width, height);
-    (width.min(max), height.min(max))
-}
-
-fn result_texture(device: &wgpu::Device, (width, height): (u32, u32)) -> (wgpu::Texture, wgpu::TextureView) {
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("ambient-occlusion"),
-        size: wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: AO_FORMAT,
-        // Written by the denoise, read by the lit shaders, cleared as an
-        // attachment when occlusion is off, and copied out by tests.
-        usage: wgpu::TextureUsages::STORAGE_BINDING
-            | wgpu::TextureUsages::TEXTURE_BINDING
-            | wgpu::TextureUsages::RENDER_ATTACHMENT
-            | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    (texture, view)
 }
 
 #[cfg(test)]

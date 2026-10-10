@@ -455,6 +455,11 @@ pub struct RenderFrame {
     /// light where nearby geometry hides the sky. `None` turns it off, and the
     /// frame then pays nothing for it.
     pub ambient_occlusion: Option<AmbientOcclusion>,
+    /// Screen-space contact shadows (C4) from the directional light: a short
+    /// march toward it through the depth buffer, catching the small and
+    /// near contacts the cascades are too coarse for. `None` turns them off,
+    /// and the frame then pays nothing for them.
+    pub contact_shadows: Option<ContactShadows>,
 }
 
 /// Ground-truth ambient occlusion (GTAO), traced at half resolution against
@@ -476,6 +481,33 @@ impl Default for AmbientOcclusion {
         Self {
             radius: 1.0,
             strength: 1.0,
+        }
+    }
+}
+
+/// Contact shadows: each visible point marches a short way toward the
+/// directional light through the depth buffer, and is shadowed if the march
+/// passes behind a surface. They darken the light's direct term only, taking
+/// the darker of themselves and the cascades, so they add shadow where the
+/// cascades miss it and change nothing where the cascades already shadow.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ContactShadows {
+    /// How far, in metres, each point marches toward the light: the longest
+    /// shadow a contact can cast.
+    pub length: f32,
+    /// How deep, in metres, a surface in the depth buffer is assumed to be.
+    /// A march passing farther behind it than this is behind it, not inside
+    /// it, so an object well in front of a surface casts nothing onto it.
+    pub thickness: f32,
+}
+
+impl Default for ContactShadows {
+    /// A third of a metre of reach through objects a fifth of a metre thick,
+    /// for human-scale scenes.
+    fn default() -> Self {
+        Self {
+            length: 0.3,
+            thickness: 0.2,
         }
     }
 }
@@ -604,6 +636,7 @@ impl RenderFrame {
             lights: Vec::new(),
             cluster_light_cap: Self::DEFAULT_CLUSTER_LIGHT_CAP,
             ambient_occlusion: None,
+            contact_shadows: None,
         }
     }
 

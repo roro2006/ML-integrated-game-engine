@@ -1,9 +1,9 @@
 // pbr_lit.wgsl — physically based metallic-roughness material, forward.
 //
-// The directional light with its shadows, the point and spot lights in the
-// fragment's cluster (C5), image-based or flat ambient darkened by ambient
-// occlusion (C4), and emissive, with
-// GGX specular, textures and normal maps. Clustered forward+ (ADR-0024).
+// The directional light with its cascaded and contact shadows, the point
+// and spot lights in the fragment's cluster (C5), image-based or flat
+// ambient darkened by ambient occlusion (C4), and emissive, with GGX
+// specular, textures and normal maps. Clustered forward+ (ADR-0024).
 //
 // Bind group layout (the pipeline must match this exactly):
 //
@@ -72,6 +72,8 @@ struct MaterialParams {
 #include "clustered_lights.wgsl"
 // Screen-space ambient occlusion (C4), for ambient light only.
 #include "ambient_occlusion.wgsl"
+// Screen-space contact shadows (C4), joining the cascades.
+#include "contact_shadow.wgsl"
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -163,7 +165,11 @@ fn fs_main(fragment: VertexOutput, @builtin(front_facing) front_facing: bool) ->
     // The geometric normal, facing the viewer's side, places the shadow
     // lookup; a normal map tilts shading, not where the surface is.
     let geometric = normalize(fragment.world_normal) * select(-1.0, 1.0, front_facing);
-    let shadow = directional_shadow(fragment.world_position, geometric);
+    // The darker of the two: contact shadows add what the cascades miss.
+    let shadow = min(
+        directional_shadow(fragment.world_position, geometric),
+        contact_shadow(fragment.clip_position.xy),
+    );
     var lit = brdf_direct(normal, to_view, to_light, albedo, metallic, roughness, irradiance * shadow);
     // Local lights cast no shadows; their lists come from this frame's cull.
     lit += local_lights(fragment.clip_position.xy, fragment.world_position, normal, to_view, albedo, metallic, roughness);

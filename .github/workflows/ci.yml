@@ -56,3 +56,43 @@ jobs:
       # tests, which assert that bad content is rejected.
       - name: Validate content
         run: cargo run --locked -p content_runtime --bin validate-content -- assets/content
+
+  # The golden images on software Vulkan (Mesa lavapipe), since hosted runners
+  # have no GPU. Advisory until its stability is known (M18 owner decision 2):
+  # the references come from the RX 7900 XT, so lavapipe compares against them
+  # with a tolerance, and keeps what it rendered when they differ. The run on
+  # the reference GPU remains the gate.
+  golden-lavapipe:
+    name: golden images (lavapipe, advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Mesa's software Vulkan
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers vulkan-tools
+          vulkaninfo --summary
+
+      # The GPU golden-image tests, named exactly so no other ignored test
+      # joins by accident. Add a new golden test here.
+      - name: Golden images
+        env:
+          GOLDEN_TOLERANCE: "8"
+          GOLDEN_OUT: ${{ runner.temp }}/golden-out
+        run: >-
+          cargo test --locked -p renderer --lib --
+          --ignored --exact --test-threads=1
+          test_scene::the_reference_scene_matches_its_golden_image
+          day_night_showcase::the_day_night_showcase_matches_its_golden_images
+
+      - name: Keep mismatching images
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-lavapipe
+          path: ${{ runner.temp }}/golden-out
+          if-no-files-found: ignore

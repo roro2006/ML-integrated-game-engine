@@ -14,6 +14,11 @@
 //! References are captured on one machine's driver, so tolerance 0 holds on
 //! that machine and not across vendors. Run a test with `UPDATE_GOLDEN=1` to
 //! write its reference instead of comparing against it.
+//!
+//! Two more variables serve a run on another driver, such as CI's software
+//! Vulkan: `GOLDEN_TOLERANCE` raises every comparison's per-channel tolerance
+//! to at least its value, and `GOLDEN_OUT` names a directory where a
+//! mismatching image is written, in the reference format, for inspection.
 
 use std::fmt;
 use std::path::PathBuf;
@@ -151,7 +156,35 @@ pub(crate) fn check(name: &str, image: &Image, tolerance: u8) -> Result<(), Stri
         )
     })?;
     let reference = decode(&bytes).map_err(|error| format!("{}: {error}", path.display()))?;
-    compare(&reference, image, tolerance).map_err(|mismatch| format!("{name}: {mismatch}"))
+    let tolerance = tolerance.max(tolerance_override(
+        std::env::var("GOLDEN_TOLERANCE").ok().as_deref(),
+    )?);
+    compare(&reference, image, tolerance).map_err(|mismatch| {
+        let kept = std::env::var_os("GOLDEN_OUT").map(|dir| {
+            let path = PathBuf::from(dir).join(format!("{name}.rgba"));
+            match std::fs::create_dir_all(path.parent().unwrap_or(&path))
+                .and_then(|()| std::fs::write(&path, encode(image)))
+            {
+                Ok(()) => format!("; rendered image kept at {}", path.display()),
+                Err(error) => format!("; could not keep the rendered image: {error}"),
+            }
+        });
+        format!(
+            "{name}: {mismatch} at tolerance {tolerance}{}",
+            kept.unwrap_or_default()
+        )
+    })
+}
+
+/// The tolerance `GOLDEN_TOLERANCE` asks for: 0 when unset, an error when it
+/// is not a number from 0 to 255, so a typo cannot silently pass a run.
+fn tolerance_override(value: Option<&str>) -> Result<u8, String> {
+    value.map_or(Ok(0), |value| {
+        value
+            .trim()
+            .parse()
+            .map_err(|_| format!("GOLDEN_TOLERANCE={value:?} is not a tolerance from 0 to 255"))
+    })
 }
 
 #[cfg(test)]
@@ -163,6 +196,16 @@ mod tests {
             width,
             height,
             rgba8: vec![fill; (width * height * 4) as usize],
+        }
+    }
+
+    #[test]
+    fn the_tolerance_override_is_a_channel_value_or_an_error() {
+        assert_eq!(tolerance_override(None), Ok(0));
+        assert_eq!(tolerance_override(Some("8")), Ok(8));
+        assert_eq!(tolerance_override(Some(" 12 ")), Ok(12));
+        for bad in ["", "-1", "256", "eight"] {
+            assert!(tolerance_override(Some(bad)).is_err(), "{bad:?}");
         }
     }
 

@@ -93,6 +93,13 @@ pub(crate) const GTAO: &str = "gtao.wgsl";
 /// compiled alone.
 pub(crate) const AMBIENT_OCCLUSION: &str = "ambient_occlusion.wgsl";
 
+/// Screen-space contact shadows from the directional light (C4).
+pub(crate) const CONTACT_SHADOW_TRACE: &str = "contact_shadow_trace.wgsl";
+
+/// Reading the contact shadows in the lit shaders. Included, never compiled
+/// alone.
+pub(crate) const CONTACT_SHADOW: &str = "contact_shadow.wgsl";
+
 /// One atomic family of pipelines built from an entry-point shader.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PipelineFamily {
@@ -111,6 +118,7 @@ pub(crate) enum PipelineFamily {
     Environment,
     LightClusters,
     AmbientOcclusion,
+    ContactShadows,
 }
 
 /// Includes are tracked by `ShaderLibrary`; this table owns rebuild routing.
@@ -130,6 +138,7 @@ pub(crate) const PIPELINES: &[(&str, PipelineFamily)] = &[
     (IBL_ENVIRONMENT, PipelineFamily::Environment),
     (LIGHT_CLUSTER_BUILD, PipelineFamily::LightClusters),
     (GTAO, PipelineFamily::AmbientOcclusion),
+    (CONTACT_SHADOW_TRACE, PipelineFamily::ContactShadows),
 ];
 
 pub(crate) fn affected_pipelines(changed: &[String]) -> Vec<(&'static str, PipelineFamily)> {
@@ -184,6 +193,8 @@ const EMBEDDED: &[(&str, &str)] = &[
     (CLUSTERED_LIGHTS, shader_file!("clustered_lights.wgsl")),
     (GTAO, shader_file!("gtao.wgsl")),
     (AMBIENT_OCCLUSION, shader_file!("ambient_occlusion.wgsl")),
+    (CONTACT_SHADOW_TRACE, shader_file!("contact_shadow_trace.wgsl")),
+    (CONTACT_SHADOW, shader_file!("contact_shadow.wgsl")),
 ];
 
 fn embedded_source(name: &str) -> Option<&'static str> {

@@ -1037,7 +1037,7 @@ mod bloom {
 /// The M17 showcase: procedural textures on a tiled ground, a row of spheres
 /// stepping through metallic and roughness, auto-exposure and bloom on. Built
 /// from nothing but this crate, so it needs no assets and no decoder.
-mod showcase {
+pub(crate) mod showcase {
     use super::*;
     use crate::{
         AutoExposure, Bloom, ColorSpace, MaterialTextures, Mips, PostSettings, SamplerDesc, Shading,
@@ -1048,7 +1048,7 @@ mod showcase {
 
     /// A UV sphere of radius 0.5 resting on the ground, smooth normals, u around
     /// and v top to bottom.
-    fn sphere(segments: u32, rings: u32) -> MeshData {
+    pub(crate) fn sphere(segments: u32, rings: u32) -> MeshData {
         let mut mesh = MeshData::default();
         for ring in 0..=rings {
             let v = ring as f32 / rings as f32;

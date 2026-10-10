@@ -33,6 +33,11 @@ mod b2_scene;
 mod block_on;
 #[cfg(test)]
 mod clustered;
+#[cfg(test)]
+mod contact_shadow_tests;
+mod contact_shadows;
+#[cfg(test)]
+mod day_night_showcase;
 mod debug_lines;
 mod depth_prepass;
 mod frame;
@@ -56,6 +61,7 @@ mod pipeline;
 mod post;
 mod registry;
 mod sampler;
+mod screen_result;
 mod shaders;
 mod shadow;
 mod shadow_pass;
@@ -68,9 +74,10 @@ mod uniforms;
 pub use atmosphere::sunlight_transmittance;
 pub use debug_lines::DebugVertex;
 pub use frame::{
-    AlphaMode, AmbientLight, AmbientOcclusion, AutoExposure, Bloom, DEFAULT_EXPOSURE_EV, DirectionalLight,
-    DrawCommand, Grade, HeightFog, LocalLight, MAX_CASCADES, MaterialDesc, MaterialHandle, MaterialTextures,
-    MeshHandle, PostSettings, RenderFrame, Shading, ShadowSettings, Sky, SpotCone, TextureHandle, Tonemapper,
+    AlphaMode, AmbientLight, AmbientOcclusion, AutoExposure, Bloom, ContactShadows, DEFAULT_EXPOSURE_EV,
+    DirectionalLight, DrawCommand, Grade, HeightFog, LocalLight, MAX_CASCADES, MaterialDesc, MaterialHandle,
+    MaterialTextures, MeshHandle, PostSettings, RenderFrame, Shading, ShadowSettings, Sky, SpotCone,
+    TextureHandle, Tonemapper,
 };
 pub use image::Image;
 pub use mesh::MeshInfo;
@@ -341,6 +348,7 @@ enum BuiltShader {
     Mips(texture::MipGenerator),
     DepthPrepass(depth_prepass::PrepassPipelines),
     AmbientOcclusion(ao::AoPipelines),
+    ContactShadows(wgpu::ComputePipeline),
     Shadow(wgpu::RenderPipeline, wgpu::RenderPipeline),
     Atmosphere(Box<atmosphere::luts::AtmosphereLuts>),
     Sky(Box<atmosphere::sky::SkyResources>),
@@ -406,6 +414,8 @@ pub struct Renderer {
     light_clusters: light_clusters::LightClusters,
     /// Screen-space ambient occlusion and the result group 0 binds (C4).
     ambient_occlusion: ao::AmbientOcclusionResources,
+    /// Screen-space contact shadows and the result group 0 binds (C4).
+    contact_shadows: contact_shadows::ContactShadowResources,
     draw_buffer: wgpu::Buffer,
     draw_bind_group: wgpu::BindGroup,
     /// Bytes between consecutive `DrawData` blocks; see `uniforms::draw_stride`.
@@ -740,6 +750,18 @@ impl Renderer {
                 }
             })?
         };
+        let contact_shadows = {
+            let source = shaders
+                .source(shaders::CONTACT_SHADOW_TRACE)
+                .map_err(RenderError::Shader)?
+                .into_owned();
+            contact_shadows::ContactShadowResources::new(&device, &queue, &source, size).map_err(
+                |message| RenderError::ShaderCompile {
+                    shader: shaders::CONTACT_SHADOW_TRACE.to_owned(),
+                    message,
+                },
+            )?
+        };
         let globals_buffer = pipeline::create_globals_buffer(&device);
         let fog_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("fog-data"),
@@ -759,7 +781,8 @@ impl Renderer {
                 environment: &environment,
                 brdf_lut: &brdf_lut.view,
                 clusters: &light_clusters,
-                ambient_occlusion: &ambient_occlusion.view,
+                ambient_occlusion: ambient_occlusion.view(),
+                contact_shadows: contact_shadows.view(),
             },
         );
         let (draw_buffer, draw_bind_group) =
@@ -813,6 +836,7 @@ impl Renderer {
             environment_bake: false,
             light_clusters,
             ambient_occlusion,
+            contact_shadows,
             draw_buffer,
             draw_bind_group,
             draw_stride,
@@ -1181,7 +1205,8 @@ impl Renderer {
                 environment: &self.environment,
                 brdf_lut: &self.brdf_lut.view,
                 clusters: &self.light_clusters,
-                ambient_occlusion: &self.ambient_occlusion.view,
+                ambient_occlusion: self.ambient_occlusion.view(),
+                contact_shadows: self.contact_shadows.view(),
             },
         );
     }
@@ -1313,6 +1338,19 @@ impl Renderer {
                 BuiltShader::AmbientOcclusion(ao::create_pipelines(&self.device, &source).map_err(
                     |message| RenderError::ShaderCompile {
                         shader: shaders::GTAO.to_owned(),
+                        message,
+                    },
+                )?)
+            }
+            PipelineFamily::ContactShadows => {
+                let source = self
+                    .shaders
+                    .source(shaders::CONTACT_SHADOW_TRACE)
+                    .map_err(RenderError::Shader)?
+                    .into_owned();
+                BuiltShader::ContactShadows(contact_shadows::create_pipeline(&self.device, &source).map_err(
+                    |message| RenderError::ShaderCompile {
+                        shader: shaders::CONTACT_SHADOW_TRACE.to_owned(),
                         message,
                     },
                 )?)
@@ -1460,6 +1498,7 @@ impl Renderer {
             BuiltShader::Mips(generator) => self.mips = generator,
             BuiltShader::DepthPrepass(pipelines) => self.prepass = pipelines,
             BuiltShader::AmbientOcclusion(pipelines) => self.ambient_occlusion.pipelines = pipelines,
+            BuiltShader::ContactShadows(pipeline) => self.contact_shadows.pipeline = pipeline,
             BuiltShader::Atmosphere(luts) => {
                 self.atmosphere = *luts;
                 self.sky.rebind(&self.device, &self.atmosphere);
@@ -1632,10 +1671,13 @@ impl Renderer {
         {
             self.rebuild_globals_bind_group();
         }
-        if self
+        let occlusion_recreated = self
             .ambient_occlusion
-            .prepare(&self.device, &self.queue, frame, self.size)
-        {
+            .prepare(&self.device, &self.queue, frame, self.size);
+        let contact_recreated = self
+            .contact_shadows
+            .prepare(&self.device, &self.queue, frame, self.size);
+        if occlusion_recreated || contact_recreated {
             self.rebuild_globals_bind_group();
         }
         self.queue.write_buffer(

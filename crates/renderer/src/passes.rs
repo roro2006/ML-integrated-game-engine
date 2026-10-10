@@ -3,11 +3,15 @@
 //! The core passes, in order:
 //!
 //! - `depth-prepass` clears the depth buffer and writes the depth of every
-//!   draw except cut-outs (ADR-0024). With ambient occlusion on it also
-//!   writes the normal target and draws cut-outs, with their alpha test.
+//!   draw except cut-outs (ADR-0024). With ambient occlusion or contact
+//!   shadows on it also writes the normal target and draws cut-outs, with
+//!   their alpha test.
 //! - `ao` and `ao-denoise`, only with ambient occlusion on, trace it at half
 //!   resolution from that depth and those normals into the result group 0
 //!   binds (C4, `ao`).
+//! - `contact-shadows`, only with contact shadows on, marches toward the
+//!   directional light from the same depth and normals into its own result
+//!   (C4, `contact_shadows`).
 //! - `lit` clears the HDR scene target, loads that depth, and draws the
 //!   geometry in linear light, shading each visible opaque pixel once.
 //! - `tonemap` maps the HDR scene onto the swapchain image (`post::tonemap`).
@@ -103,9 +107,8 @@ impl Renderer {
         // Persistent rather than transient: group 0 binds it for sampling.
         let atlas = graph.import("shadow-atlas");
         let occlusion = graph.import("ambient-occlusion");
-        let normals = self
-            .ambient_occlusion
-            .active()
+        let contact = graph.import("contact-shadows");
+        let normals = (self.ambient_occlusion.active() || self.contact_shadows.active())
             .then(|| graph.create("normals", crate::depth_prepass::normal_desc(width, height)));
 
         // Depth is stored only when a later pass loads it; otherwise the store
@@ -140,7 +143,7 @@ impl Renderer {
         graph.add_pass("depth-prepass", &[], &prepass_writes, move |context| {
             self.depth_prepass(context, depth, normals, frame, plan)
         });
-        if let Some(normals) = normals {
+        if let Some(normals) = normals.filter(|_| self.ambient_occlusion.active()) {
             let raw = graph.create("ao-raw", crate::ao::raw_desc(width, height));
             graph.add_pass("ao", &[depth, normals], &[raw], move |context| {
                 let (depth, normals, raw) =
@@ -161,9 +164,20 @@ impl Renderer {
                 Ok(())
             });
         }
-        graph.add_pass("lit", &[depth, atlas, occlusion], &[hdr, depth], move |context| {
-            self.lit_pass(context, hdr, depth, depth_is_read_later, frame, plan)
-        });
+        if let Some(normals) = normals.filter(|_| self.contact_shadows.active()) {
+            graph.add_pass("contact-shadows", &[depth, normals], &[contact], move |context| {
+                let (depth, normals) = (context.view(depth)?, context.view(normals)?);
+                self.contact_shadows
+                    .record(&self.device, &mut context.encoder, &depth, &normals);
+                Ok(())
+            });
+        }
+        graph.add_pass(
+            "lit",
+            &[depth, atlas, occlusion, contact],
+            &[hdr, depth],
+            move |context| self.lit_pass(context, hdr, depth, depth_is_read_later, frame, plan),
+        );
         if frame.sky.is_some() {
             let debug_reads_depth = debug_vertices.is_some();
             graph.add_pass("sky", &[depth, hdr], &[hdr], move |context| {
@@ -206,7 +220,8 @@ impl Renderer {
         };
         set_view(surface, Some(surface_view))?;
         set_view(atlas, Some(self.shadows.atlas.view.clone()))?;
-        set_view(occlusion, Some(self.ambient_occlusion.view.clone()))?;
+        set_view(occlusion, Some(self.ambient_occlusion.view().clone()))?;
+        set_view(contact, Some(self.contact_shadows.view().clone()))?;
         for (id, name, desc) in compiled.transients() {
             let slot = pool.acquire(desc, |desc| resources::create_texture(&self.device, name, desc));
             let view = pool
@@ -422,9 +437,9 @@ impl Renderer {
     /// Writes the depth of every opaque draw, so the lit pass shades each
     /// visible pixel once (ADR-0024). Without a normal target, cut-out draws
     /// are left to the lit pass, because depth alone cannot see their holes.
-    /// With one (ambient occlusion on), opaque draws write their normals and
-    /// cut-outs follow with the masked pipeline, which runs their alpha test,
-    /// so occlusion sees foliage as it is drawn.
+    /// With one (ambient occlusion or contact shadows on), opaque draws write
+    /// their normals and cut-outs follow with the masked pipeline, which runs
+    /// their alpha test, so screen-space effects see foliage as it is drawn.
     fn depth_prepass(
         &self,
         context: &mut PassContext,
