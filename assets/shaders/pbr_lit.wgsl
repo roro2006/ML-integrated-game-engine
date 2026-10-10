@@ -1,9 +1,9 @@
 // pbr_lit.wgsl — physically based metallic-roughness material, forward.
 //
-// One directional light plus flat ambient, as lit.wgsl, but with GGX
-// specular, textures and normal maps. Written forward-first; if the B2
-// benchmark picks deferred, the BRDF in brdf.wgsl moves to the lighting pass
-// unchanged.
+// The directional light with its shadows, the point and spot lights in the
+// fragment's cluster (C5), image-based or flat ambient darkened by ambient
+// occlusion (C4), and emissive, with
+// GGX specular, textures and normal maps. Clustered forward+ (ADR-0024).
 //
 // Bind group layout (the pipeline must match this exactly):
 //
@@ -68,6 +68,10 @@ struct MaterialParams {
 #include "aerial.wgsl"
 // Ambient light from the sky's environment when there is one (C2).
 #include "ibl.wgsl"
+// Point and spot lights by cluster (C5).
+#include "clustered_lights.wgsl"
+// Screen-space ambient occlusion (C4), for ambient light only.
+#include "ambient_occlusion.wgsl"
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -161,10 +165,15 @@ fn fs_main(fragment: VertexOutput, @builtin(front_facing) front_facing: bool) ->
     let geometric = normalize(fragment.world_normal) * select(-1.0, 1.0, front_facing);
     let shadow = directional_shadow(fragment.world_position, geometric);
     var lit = brdf_direct(normal, to_view, to_light, albedo, metallic, roughness, irradiance * shadow);
+    // Local lights cast no shadows; their lists come from this frame's cull.
+    lit += local_lights(fragment.clip_position.xy, fragment.world_position, normal, to_view, albedo, metallic, roughness);
+    // Baked (ORM) and screen-space occlusion both hide ambient light only.
+    let ambient_occlusion = occlusion
+        * screen_ambient_occlusion(fragment.clip_position.xy, fragment.world_position, globals.camera_position.xyz);
     if environment.header.x > 0.5 {
-        lit += image_based_light(normal, to_view, albedo, metallic, roughness, occlusion);
+        lit += image_based_light(normal, to_view, albedo, metallic, roughness, ambient_occlusion);
     } else {
-        lit += ambient_flat(albedo, metallic, globals.ambient_color.rgb * globals.ambient_color.w, occlusion);
+        lit += ambient_flat(albedo, metallic, globals.ambient_color.rgb * globals.ambient_color.w, ambient_occlusion);
     }
     lit += emitted;
     lit = apply_atmosphere(lit, fragment.world_position, globals.camera_position.xyz, globals.view_proj);

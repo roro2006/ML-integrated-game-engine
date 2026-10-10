@@ -168,8 +168,48 @@ pub(crate) fn globals_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
                 },
                 count: None,
             },
+            // Clustered point and spot lights (C5): the cluster parameters,
+            // the lights, and each cluster's light list.
+            wgpu::BindGroupLayoutEntry {
+                binding: 10,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(
+                        crate::light_clusters::CLUSTER_PARAMS_SIZE as u64,
+                    ),
+                },
+                count: None,
+            },
+            read_only_storage(11),
+            read_only_storage(12),
+            // Screen-space ambient occlusion (C4), half resolution.
+            wgpu::BindGroupLayoutEntry {
+                binding: 13,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
         ],
     })
+}
+
+fn read_only_storage(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    }
 }
 
 /// Bind group 1: per-draw `DrawData`, addressed by dynamic offset.
@@ -296,10 +336,12 @@ pub(crate) struct GlobalsInputs<'a> {
     pub(crate) fog: &'a wgpu::Buffer,
     pub(crate) environment: &'a crate::ibl::Environment,
     pub(crate) brdf_lut: &'a wgpu::TextureView,
+    pub(crate) clusters: &'a crate::light_clusters::LightClusters,
+    pub(crate) ambient_occlusion: &'a wgpu::TextureView,
 }
 
-/// Group 0's bind group. Rebuilt when the shadow atlas or the atmosphere's
-/// resources are recreated.
+/// Group 0's bind group. Rebuilt when the shadow atlas, the atmosphere's
+/// resources, the light buffers or the occlusion result are recreated.
 pub(crate) fn create_globals_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
@@ -313,6 +355,8 @@ pub(crate) fn create_globals_bind_group(
         fog,
         environment,
         brdf_lut,
+        clusters,
+        ambient_occlusion,
     } = inputs;
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("globals-bind-group"),
@@ -361,6 +405,22 @@ pub(crate) fn create_globals_bind_group(
             wgpu::BindGroupEntry {
                 binding: 9,
                 resource: wgpu::BindingResource::TextureView(brdf_lut),
+            },
+            wgpu::BindGroupEntry {
+                binding: 10,
+                resource: clusters.params.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 11,
+                resource: clusters.lights.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 12,
+                resource: clusters.grid.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 13,
+                resource: wgpu::BindingResource::TextureView(ambient_occlusion),
             },
         ],
     })

@@ -79,6 +79,20 @@ pub(crate) const MIP_DOWNSAMPLE: &str = "mip_downsample.wgsl";
 /// Shared colour maths: tonemapping curves. Included, never compiled alone.
 pub(crate) const COLOUR: &str = "colour.wgsl";
 
+/// Builds the clustered light lists each frame with local lights (C5).
+pub(crate) const LIGHT_CLUSTER_BUILD: &str = "light_cluster_build.wgsl";
+
+/// Point and spot lights by cluster, for the cull and the PBR shader.
+/// Included, never compiled alone.
+pub(crate) const CLUSTERED_LIGHTS: &str = "clustered_lights.wgsl";
+
+/// Ground-truth ambient occlusion and its denoise (C4).
+pub(crate) const GTAO: &str = "gtao.wgsl";
+
+/// Reading the occlusion result in the lit shaders. Included, never
+/// compiled alone.
+pub(crate) const AMBIENT_OCCLUSION: &str = "ambient_occlusion.wgsl";
+
 /// One atomic family of pipelines built from an entry-point shader.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PipelineFamily {
@@ -95,6 +109,8 @@ pub(crate) enum PipelineFamily {
     Sky,
     BrdfLut,
     Environment,
+    LightClusters,
+    AmbientOcclusion,
 }
 
 /// Includes are tracked by `ShaderLibrary`; this table owns rebuild routing.
@@ -112,6 +128,8 @@ pub(crate) const PIPELINES: &[(&str, PipelineFamily)] = &[
     (ATMOSPHERE_SKY, PipelineFamily::Sky),
     (BRDF_LUT, PipelineFamily::BrdfLut),
     (IBL_ENVIRONMENT, PipelineFamily::Environment),
+    (LIGHT_CLUSTER_BUILD, PipelineFamily::LightClusters),
+    (GTAO, PipelineFamily::AmbientOcclusion),
 ];
 
 pub(crate) fn affected_pipelines(changed: &[String]) -> Vec<(&'static str, PipelineFamily)> {
@@ -162,6 +180,10 @@ const EMBEDDED: &[(&str, &str)] = &[
     (BRDF_LUT, shader_file!("brdf_lut.wgsl")),
     (IBL_ENVIRONMENT, shader_file!("ibl_environment.wgsl")),
     (IBL, shader_file!("ibl.wgsl")),
+    (LIGHT_CLUSTER_BUILD, shader_file!("light_cluster_build.wgsl")),
+    (CLUSTERED_LIGHTS, shader_file!("clustered_lights.wgsl")),
+    (GTAO, shader_file!("gtao.wgsl")),
+    (AMBIENT_OCCLUSION, shader_file!("ambient_occlusion.wgsl")),
 ];
 
 fn embedded_source(name: &str) -> Option<&'static str> {

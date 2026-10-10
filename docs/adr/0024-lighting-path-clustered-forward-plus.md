@@ -56,3 +56,12 @@ The integrated dense runs vary between runs (the depth prepass alternates betwee
 
 - **Deferred, as planned.** It was slower in every measured case, by 30 to 60 percent on the integrated GPU, and it costs three render targets of memory at full resolution.
 - **Forward without a prepass.** It was the fastest only on dense geometry on the discrete GPU, by 5 percent, and it was 3 to 12 times slower everywhere else.
+
+## Amendment 1: the normal target for GTAO (C4), 2026-10-10
+
+Decision 4, as built for ambient occlusion:
+
+- **The prepass writes normals only while ambient occlusion is on.** The target is `Rgb10a2Unorm` at full resolution, holding the world-space geometric normal as `n * 0.5 + 0.5`. World space rather than view space, because the renderer receives a view-projection and no separate view matrix, and GTAO reconstructs positions from depth through the inverse view-projection anyway. Its slice plane is built from the view vector and the screen direction lifted to the pixel's depth, so it needs no view space. With occlusion off the prepass is the depth-only pipeline of decision 6, unchanged in cost and output.
+- **Cut-outs are drawn into the prepass while ambient occlusion is on**, by a masked pipeline that runs their alpha test and binds their material group. Without that, occlusion would not see foliage: depth would show the ground behind a leaf, and the ground's occlusion would land on the leaf. The forward pass still runs the same alpha test and writes depth as before, so the two passes agree on every hole.
+- **Measured** at 1920x1080 on the RX 7900 XT, in a corner scene with 64 boxes and 64 cut-outs: the prepass takes 0.014 ms depth-only and 0.030 ms with normals and cut-outs; the GTAO trace takes 0.16 ms and its denoise 0.02 ms, against a 1 ms budget. The masked pipeline's cost is part of the 0.016 ms difference, so it stays.
+- A velocity target joins this one when E2 (TAA) starts.

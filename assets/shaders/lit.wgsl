@@ -1,9 +1,10 @@
 // lit.wgsl — the basic lit material for low-poly geometry.
 //
-// One directional light plus a flat ambient term, no textures. Deliberately
-// cheap: the target is Vulkan-capable integrated graphics, so there is no
-// per-pixel normalization of anything that can be normalized on the CPU, no
-// specular term, and no branching.
+// One directional light with its shadows, plus a flat ambient term darkened
+// by screen-space ambient occlusion, no textures. Deliberately cheap: the
+// target is Vulkan-capable integrated graphics, so there is no per-pixel
+// normalization of anything that can be normalized on the CPU and no
+// specular term.
 //
 // Bind group layout (the pipeline must match this exactly):
 //
@@ -62,6 +63,8 @@ struct DrawData {
 #include "shadow.wgsl"
 // Aerial perspective and height fog between the camera and the surface.
 #include "aerial.wgsl"
+// Screen-space ambient occlusion (C4), for the ambient term only.
+#include "ambient_occlusion.wgsl"
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -108,7 +111,8 @@ fn fs_main(fragment: VertexOutput) -> @location(0) vec4<f32> {
     let lambert = max(dot(normal, to_light), 0.0);
     let shadow = directional_shadow(fragment.world_position, normal);
     let direct = globals.light_color.rgb * globals.light_color.w * lambert * shadow;
-    let ambient = globals.ambient_color.rgb * globals.ambient_color.w;
+    let ambient = globals.ambient_color.rgb * globals.ambient_color.w
+        * screen_ambient_occlusion(fragment.clip_position.xy, fragment.world_position, globals.camera_position.xyz);
 
     // The tint multiplies the painted vertex colour; white vertices make this
     // exactly the old flat colour.

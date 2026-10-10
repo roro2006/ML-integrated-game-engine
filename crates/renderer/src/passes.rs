@@ -1,9 +1,13 @@
 //! The frame's passes, declared on the render graph.
 //!
-//! Four passes, each its own render pass:
+//! The core passes, in order:
 //!
 //! - `depth-prepass` clears the depth buffer and writes the depth of every
-//!   draw except cut-outs (ADR-0024).
+//!   draw except cut-outs (ADR-0024). With ambient occlusion on it also
+//!   writes the normal target and draws cut-outs, with their alpha test.
+//! - `ao` and `ao-denoise`, only with ambient occlusion on, trace it at half
+//!   resolution from that depth and those normals into the result group 0
+//!   binds (C4, `ao`).
 //! - `lit` clears the HDR scene target, loads that depth, and draws the
 //!   geometry in linear light, shading each visible opaque pixel once.
 //! - `tonemap` maps the HDR scene onto the swapchain image (`post::tonemap`).
@@ -98,6 +102,11 @@ impl Renderer {
         let depth = graph.create("depth", depth_desc(width, height));
         // Persistent rather than transient: group 0 binds it for sampling.
         let atlas = graph.import("shadow-atlas");
+        let occlusion = graph.import("ambient-occlusion");
+        let normals = self
+            .ambient_occlusion
+            .active()
+            .then(|| graph.create("normals", crate::depth_prepass::normal_desc(width, height)));
 
         // Depth is stored only when a later pass loads it; otherwise the store
         // is wasted bandwidth, which tiled integrated GPUs feel most.
@@ -121,10 +130,38 @@ impl Renderer {
                 });
             }
         }
-        graph.add_pass("depth-prepass", &[], &[depth], move |context| {
-            self.depth_prepass(context, depth, frame, plan)
+        if self.light_clusters.active() {
+            graph.add_pass("light-clusters", &[], &[], move |context| {
+                self.light_clusters.record(&mut context.encoder);
+                Ok(())
+            });
+        }
+        let prepass_writes: Vec<ResourceId> = std::iter::once(depth).chain(normals).collect();
+        graph.add_pass("depth-prepass", &[], &prepass_writes, move |context| {
+            self.depth_prepass(context, depth, normals, frame, plan)
         });
-        graph.add_pass("lit", &[depth, atlas], &[hdr, depth], move |context| {
+        if let Some(normals) = normals {
+            let raw = graph.create("ao-raw", crate::ao::raw_desc(width, height));
+            graph.add_pass("ao", &[depth, normals], &[raw], move |context| {
+                let (depth, normals, raw) =
+                    (context.view(depth)?, context.view(normals)?, context.view(raw)?);
+                self.ambient_occlusion.record_trace(
+                    &self.device,
+                    &mut context.encoder,
+                    &depth,
+                    &normals,
+                    &raw,
+                );
+                Ok(())
+            });
+            graph.add_pass("ao-denoise", &[raw], &[occlusion], move |context| {
+                let raw = context.view(raw)?;
+                self.ambient_occlusion
+                    .record_denoise(&self.device, &mut context.encoder, &raw);
+                Ok(())
+            });
+        }
+        graph.add_pass("lit", &[depth, atlas, occlusion], &[hdr, depth], move |context| {
             self.lit_pass(context, hdr, depth, depth_is_read_later, frame, plan)
         });
         if frame.sky.is_some() {
@@ -169,6 +206,7 @@ impl Renderer {
         };
         set_view(surface, Some(surface_view))?;
         set_view(atlas, Some(self.shadows.atlas.view.clone()))?;
+        set_view(occlusion, Some(self.ambient_occlusion.view.clone()))?;
         for (id, name, desc) in compiled.transients() {
             let slot = pool.acquire(desc, |desc| resources::create_texture(&self.device, name, desc));
             let view = pool
@@ -382,19 +420,41 @@ impl Renderer {
     }
 
     /// Writes the depth of every opaque draw, so the lit pass shades each
-    /// visible pixel once (ADR-0024). Cut-out draws are left to the lit pass,
-    /// because depth written here cannot see their holes.
+    /// visible pixel once (ADR-0024). Without a normal target, cut-out draws
+    /// are left to the lit pass, because depth alone cannot see their holes.
+    /// With one (ambient occlusion on), opaque draws write their normals and
+    /// cut-outs follow with the masked pipeline, which runs their alpha test,
+    /// so occlusion sees foliage as it is drawn.
     fn depth_prepass(
         &self,
         context: &mut PassContext,
         depth: ResourceId,
+        normals: Option<ResourceId>,
         frame: &RenderFrame,
         plan: &DrawPlan,
     ) -> Result<(), String> {
         let depth_view = context.view(depth)?;
+        let normal_view = normals.map(|normals| context.view(normals)).transpose()?;
+        // No colour attachment at all without normals: the depth-only
+        // pipeline has no colour targets, and an empty slot would not match.
+        let normal_attachments: Vec<_> = normal_view
+            .iter()
+            .map(|view| {
+                Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        // Where nothing is drawn, depth says sky and nothing reads it.
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })
+            })
+            .collect();
         let mut pass = context.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("depth-prepass"),
-            color_attachments: &[],
+            color_attachments: &normal_attachments,
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: &depth_view,
                 depth_ops: Some(wgpu::Operations {
@@ -409,29 +469,42 @@ impl Renderer {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        pass.set_pipeline(&self.depth_prepass_pipeline);
-        pass.set_bind_group(0, &self.globals_bind_group, &[]);
+        let with_normals = normals.is_some();
         let stride = self.draw_stride as usize;
-        for planned in &plan.draws {
-            let is_cut_out = frame
-                .draws
-                .get(planned.draw)
-                .and_then(|draw| self.materials.get(draw.material))
-                .and_then(|material| material.pbr.as_ref())
-                .is_some_and(|binding| binding.key.alpha_mask);
-            if is_cut_out {
-                continue;
+        // Opaque draws first, then, with normals, cut-outs; group 0 is
+        // rebound after the pipeline switch.
+        let passes: &[bool] = if with_normals { &[false, true] } else { &[false] };
+        for &masked in passes {
+            pass.set_pipeline(match (with_normals, masked) {
+                (false, _) => &self.prepass.depth_only,
+                (true, false) => &self.prepass.normals,
+                (true, true) => &self.prepass.masked_normals,
+            });
+            pass.set_bind_group(0, &self.globals_bind_group, &[]);
+            for planned in &plan.draws {
+                let cut_out = frame
+                    .draws
+                    .get(planned.draw)
+                    .and_then(|draw| self.materials.get(draw.material))
+                    .and_then(|material| material.pbr.as_ref())
+                    .filter(|binding| binding.key.alpha_mask);
+                if cut_out.is_some() != masked {
+                    continue;
+                }
+                let Some(mesh) = self.meshes.get_by_index(planned.mesh) else {
+                    continue;
+                };
+                let Ok(offset) = u32::try_from(planned.slot * stride) else {
+                    continue;
+                };
+                if let Some(binding) = cut_out {
+                    pass.set_bind_group(2, &binding.bind_group, &[]);
+                }
+                pass.set_bind_group(1, &self.draw_bind_group, &[offset]);
+                pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..mesh.index_count, 0, 0..1);
             }
-            let Some(mesh) = self.meshes.get_by_index(planned.mesh) else {
-                continue;
-            };
-            let Ok(offset) = u32::try_from(planned.slot * stride) else {
-                continue;
-            };
-            pass.set_bind_group(1, &self.draw_bind_group, &[offset]);
-            pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-            pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..mesh.index_count, 0, 0..1);
         }
         Ok(())
     }

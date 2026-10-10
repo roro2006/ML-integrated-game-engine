@@ -131,6 +131,16 @@ impl<T> ReadbackRing<T> {
         self.slots.get_mut(slot).and_then(Option::take)
     }
 
+    /// The label in a busy slot; `None` for a free or out-of-range one.
+    pub(crate) fn get(&self, slot: usize) -> Option<&T> {
+        self.slots.get(slot).and_then(Option::as_ref)
+    }
+
+    /// The label in a busy slot, to update in place.
+    pub(crate) fn get_mut(&mut self, slot: usize) -> Option<&mut T> {
+        self.slots.get_mut(slot).and_then(Option::as_mut)
+    }
+
     /// How many slots hold a readback that has not completed.
     #[cfg(test)]
     pub(crate) fn in_flight(&self) -> usize {

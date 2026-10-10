@@ -126,6 +126,31 @@ impl Frustum {
     }
 }
 
+/// The camera as the view frustum shows it: eye, unit forward axis, and
+/// the view depths of the near and far planes. `None` for a degenerate or
+/// orthographic projection.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ViewDepths {
+    pub(crate) eye: Vec3,
+    pub(crate) forward: Vec3,
+    pub(crate) near: f32,
+    pub(crate) far: f32,
+}
+
+pub(crate) fn view_depths(view_proj: &[[f32; 4]; 4]) -> Option<ViewDepths> {
+    let inverse = Mat4::from_cols_array_2d(view_proj).inverse();
+    let frustum = Frustum::new(&inverse)?;
+    let near_centre = frustum.near_corners.iter().copied().sum::<Vec3>() / 4.0;
+    let far_centre = frustum.far_corners.iter().copied().sum::<Vec3>() / 4.0;
+    let forward = (far_centre - near_centre).try_normalize()?;
+    Some(ViewDepths {
+        eye: near_centre - forward * frustum.near,
+        forward,
+        near: frustum.near,
+        far: frustum.far,
+    })
+}
+
 /// Fits the cascades for one frame.
 ///
 /// `view_proj` is the camera's (column-major, `0..1` depth) and `to_light`

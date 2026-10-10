@@ -22,6 +22,9 @@
 //! [`Image`]. Both draw through the same code, which is what makes a readback a
 //! fair stand-in for what a window shows.
 
+mod ao;
+#[cfg(test)]
+mod ao_tests;
 mod atmosphere;
 #[cfg(test)]
 mod b2_bench;
@@ -40,6 +43,9 @@ mod ibl;
 pub use gpu_timing::PassTiming;
 mod graph;
 mod image;
+#[cfg(test)]
+mod light_cluster_tests;
+mod light_clusters;
 mod material;
 mod mesh;
 mod mesh_data;
@@ -62,9 +68,9 @@ mod uniforms;
 pub use atmosphere::sunlight_transmittance;
 pub use debug_lines::DebugVertex;
 pub use frame::{
-    AlphaMode, AmbientLight, AutoExposure, Bloom, DEFAULT_EXPOSURE_EV, DirectionalLight, DrawCommand, Grade,
-    HeightFog, MAX_CASCADES, MaterialDesc, MaterialHandle, MaterialTextures, MeshHandle, PostSettings,
-    RenderFrame, Shading, ShadowSettings, Sky, TextureHandle, Tonemapper,
+    AlphaMode, AmbientLight, AmbientOcclusion, AutoExposure, Bloom, DEFAULT_EXPOSURE_EV, DirectionalLight,
+    DrawCommand, Grade, HeightFog, LocalLight, MAX_CASCADES, MaterialDesc, MaterialHandle, MaterialTextures,
+    MeshHandle, PostSettings, RenderFrame, Shading, ShadowSettings, Sky, SpotCone, TextureHandle, Tonemapper,
 };
 pub use image::Image;
 pub use mesh::MeshInfo;
@@ -273,6 +279,11 @@ pub struct FrameStats {
     /// make the performance numbers lie about the thing being profiled. The
     /// whole debug pass is one draw call whatever this number is.
     pub debug_lines: u32,
+    /// Light-cluster pairs dropped this frame because a cluster's list was
+    /// full ([`RenderFrame::cluster_light_cap`]). Zero means every light
+    /// reached every cluster it touches. Read back from the GPU, so it lags
+    /// a few frames like `gpu_passes`; `None` before the first reading.
+    pub light_overflow: Option<u32>,
 }
 
 /// Why a frame produced no presentation.
@@ -328,12 +339,14 @@ enum BuiltShader {
     Bloom(post::bloom::BloomResources),
     Exposure(post::exposure::ExposureResources),
     Mips(texture::MipGenerator),
-    DepthPrepass(wgpu::RenderPipeline),
+    DepthPrepass(depth_prepass::PrepassPipelines),
+    AmbientOcclusion(ao::AoPipelines),
     Shadow(wgpu::RenderPipeline, wgpu::RenderPipeline),
     Atmosphere(Box<atmosphere::luts::AtmosphereLuts>),
     Sky(Box<atmosphere::sky::SkyResources>),
     BrdfLut(Box<ibl::BrdfLut>),
     Environment(Box<ibl::Environment>),
+    LightClusters(Box<light_clusters::LightClusters>),
 }
 
 /// Owns the GPU device, queue, and output (a window's swapchain or an
@@ -352,8 +365,9 @@ pub struct Renderer {
     pipeline_layout: wgpu::PipelineLayout,
     draw_layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
-    /// Writes opaque depth before the forward pass (ADR-0024).
-    depth_prepass_pipeline: wgpu::RenderPipeline,
+    /// Write opaque depth before the forward pass (ADR-0024), and the
+    /// normals ambient occlusion reads.
+    prepass: depth_prepass::PrepassPipelines,
     /// The last hot-reload failure, kept so the engine can show it on the debug
     /// overlay. The renderer does not log: that is the engine layer's job.
     shader_error: Option<String>,
@@ -388,6 +402,10 @@ pub struct Renderer {
     environment_bake: bool,
     /// The sky-view LUT and the sky pass, used when a frame has a sky.
     sky: atmosphere::sky::SkyResources,
+    /// Point and spot lights and their per-frame cluster cull (C5).
+    light_clusters: light_clusters::LightClusters,
+    /// Screen-space ambient occlusion and the result group 0 binds (C4).
+    ambient_occlusion: ao::AmbientOcclusionResources,
     draw_buffer: wgpu::Buffer,
     draw_bind_group: wgpu::BindGroup,
     /// Bytes between consecutive `DrawData` blocks; see `uniforms::draw_stride`.
@@ -552,19 +570,6 @@ impl Renderer {
             )?
         };
 
-        let depth_prepass_pipeline = {
-            let source = shaders
-                .source(shaders::DEPTH_PREPASS)
-                .map_err(RenderError::Shader)?
-                .into_owned();
-            depth_prepass::create_pipeline(&device, &pipeline_layout, &source).map_err(|message| {
-                RenderError::ShaderCompile {
-                    shader: shaders::DEPTH_PREPASS.to_owned(),
-                    message,
-                }
-            })?
-        };
-
         // The debug pass reuses the *same* globals layout and, at draw time, the
         // same globals buffer: it needs the view-projection and nothing else, so
         // a second per-frame uniform would be a second copy of data already
@@ -597,6 +602,18 @@ impl Renderer {
             immediate_size: 0,
         });
         let pbr_pipelines = build_pbr_pipelines(&device, &mut shaders, &pbr_pipeline_layout)?;
+        // Cut-outs in the prepass bind their material, as in the PBR pass.
+        let prepass = {
+            let source = shaders
+                .source(shaders::DEPTH_PREPASS)
+                .map_err(RenderError::Shader)?
+                .into_owned();
+            depth_prepass::create_pipelines(&device, &pipeline_layout, &pbr_pipeline_layout, &source)
+                .map_err(|message| RenderError::ShaderCompile {
+                    shader: shaders::DEPTH_PREPASS.to_owned(),
+                    message,
+                })?
+        };
 
         let tonemap_layout = tonemap::bind_group_layout(&device);
         let tonemap_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -699,6 +716,30 @@ impl Renderer {
                 },
             )?
         };
+        let light_clusters = {
+            let source = shaders
+                .source(shaders::LIGHT_CLUSTER_BUILD)
+                .map_err(RenderError::Shader)?
+                .into_owned();
+            light_clusters::LightClusters::new(&device, &source).map_err(|message| {
+                RenderError::ShaderCompile {
+                    shader: shaders::LIGHT_CLUSTER_BUILD.to_owned(),
+                    message,
+                }
+            })?
+        };
+        let ambient_occlusion = {
+            let source = shaders
+                .source(shaders::GTAO)
+                .map_err(RenderError::Shader)?
+                .into_owned();
+            ao::AmbientOcclusionResources::new(&device, &queue, &source, size).map_err(|message| {
+                RenderError::ShaderCompile {
+                    shader: shaders::GTAO.to_owned(),
+                    message,
+                }
+            })?
+        };
         let globals_buffer = pipeline::create_globals_buffer(&device);
         let fog_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("fog-data"),
@@ -717,6 +758,8 @@ impl Renderer {
                 fog: &fog_buffer,
                 environment: &environment,
                 brdf_lut: &brdf_lut.view,
+                clusters: &light_clusters,
+                ambient_occlusion: &ambient_occlusion.view,
             },
         );
         let (draw_buffer, draw_bind_group) =
@@ -750,7 +793,7 @@ impl Renderer {
             pipeline_layout,
             draw_layout,
             pipeline,
-            depth_prepass_pipeline,
+            prepass,
             shader_error: None,
             shader_failures: BTreeMap::new(),
             transients: TexturePool::default(),
@@ -768,6 +811,8 @@ impl Renderer {
             brdf_lut,
             environment,
             environment_bake: false,
+            light_clusters,
+            ambient_occlusion,
             draw_buffer,
             draw_bind_group,
             draw_stride,
@@ -1069,17 +1114,21 @@ impl Renderer {
         )
     }
 
-    fn build_depth_prepass_pipeline(&mut self) -> Result<wgpu::RenderPipeline, RenderError> {
+    fn build_prepass_pipelines(&mut self) -> Result<depth_prepass::PrepassPipelines, RenderError> {
         let source = self
             .shaders
             .source(shaders::DEPTH_PREPASS)
             .map_err(RenderError::Shader)?
             .into_owned();
-        depth_prepass::create_pipeline(&self.device, &self.pipeline_layout, &source).map_err(|message| {
-            RenderError::ShaderCompile {
-                shader: shaders::DEPTH_PREPASS.to_owned(),
-                message,
-            }
+        depth_prepass::create_pipelines(
+            &self.device,
+            &self.pipeline_layout,
+            &self.pbr_pipeline_layout,
+            &source,
+        )
+        .map_err(|message| RenderError::ShaderCompile {
+            shader: shaders::DEPTH_PREPASS.to_owned(),
+            message,
         })
     }
 
@@ -1131,6 +1180,8 @@ impl Renderer {
                 fog: &self.fog_buffer,
                 environment: &self.environment,
                 brdf_lut: &self.brdf_lut.view,
+                clusters: &self.light_clusters,
+                ambient_occlusion: &self.ambient_occlusion.view,
             },
         );
     }
@@ -1252,7 +1303,20 @@ impl Renderer {
         use shaders::PipelineFamily;
         Ok(match family {
             PipelineFamily::Lit => BuiltShader::Lit(self.build_lit_pipeline()?),
-            PipelineFamily::DepthPrepass => BuiltShader::DepthPrepass(self.build_depth_prepass_pipeline()?),
+            PipelineFamily::DepthPrepass => BuiltShader::DepthPrepass(self.build_prepass_pipelines()?),
+            PipelineFamily::AmbientOcclusion => {
+                let source = self
+                    .shaders
+                    .source(shaders::GTAO)
+                    .map_err(RenderError::Shader)?
+                    .into_owned();
+                BuiltShader::AmbientOcclusion(ao::create_pipelines(&self.device, &source).map_err(
+                    |message| RenderError::ShaderCompile {
+                        shader: shaders::GTAO.to_owned(),
+                        message,
+                    },
+                )?)
+            }
             PipelineFamily::Atmosphere => {
                 let source = self
                     .shaders
@@ -1303,6 +1367,21 @@ impl Renderer {
                     .map_err(|message| RenderError::ShaderCompile {
                         shader: shaders::ATMOSPHERE_SKY.to_owned(),
                         message,
+                    })?,
+                ))
+            }
+            PipelineFamily::LightClusters => {
+                let source = self
+                    .shaders
+                    .source(shaders::LIGHT_CLUSTER_BUILD)
+                    .map_err(RenderError::Shader)?
+                    .into_owned();
+                BuiltShader::LightClusters(Box::new(
+                    light_clusters::LightClusters::new(&self.device, &source).map_err(|message| {
+                        RenderError::ShaderCompile {
+                            shader: shaders::LIGHT_CLUSTER_BUILD.to_owned(),
+                            message,
+                        }
                     })?,
                 ))
             }
@@ -1379,7 +1458,8 @@ impl Renderer {
                 self.exposure.average = resources.average;
             }
             BuiltShader::Mips(generator) => self.mips = generator,
-            BuiltShader::DepthPrepass(pipeline) => self.depth_prepass_pipeline = pipeline,
+            BuiltShader::DepthPrepass(pipelines) => self.prepass = pipelines,
+            BuiltShader::AmbientOcclusion(pipelines) => self.ambient_occlusion.pipelines = pipelines,
             BuiltShader::Atmosphere(luts) => {
                 self.atmosphere = *luts;
                 self.sky.rebind(&self.device, &self.atmosphere);
@@ -1402,6 +1482,11 @@ impl Renderer {
             BuiltShader::Shadow(plain, masked) => {
                 self.shadows.pipeline = plain;
                 self.shadows.masked_pipeline = masked;
+            }
+            BuiltShader::LightClusters(clusters) => {
+                // Fresh buffers too; the next frame uploads its lights again.
+                self.light_clusters = *clusters;
+                self.rebuild_globals_bind_group();
             }
         }
     }
@@ -1541,6 +1626,18 @@ impl Renderer {
 
         self.prepare_shadows(frame);
         self.prepare_environment(frame);
+        if self
+            .light_clusters
+            .prepare(&self.device, &self.queue, frame, self.size)
+        {
+            self.rebuild_globals_bind_group();
+        }
+        if self
+            .ambient_occlusion
+            .prepare(&self.device, &self.queue, frame, self.size)
+        {
+            self.rebuild_globals_bind_group();
+        }
         self.queue.write_buffer(
             &self.fog_buffer,
             0,
@@ -1620,6 +1717,7 @@ impl Renderer {
         if let Some(timer) = &mut self.gpu_timer {
             timer.submitted();
         }
+        self.light_clusters.submitted();
         self.finish(target, suboptimal);
 
         Ok(FrameOutcome::Presented(FrameStats {
@@ -1633,6 +1731,7 @@ impl Renderer {
             cpu_time: started.elapsed(),
             // Vertices are consumed in pairs, so segments are half of them.
             debug_lines: debug_vertices.unwrap_or(0) / 2,
+            light_overflow: self.light_clusters.latest_overflow(),
         }))
     }
 
@@ -1693,6 +1792,7 @@ impl Renderer {
             triangles: 0,
             cpu_time: started.elapsed(),
             debug_lines: 0,
+            light_overflow: self.light_clusters.latest_overflow(),
         }))
     }
 

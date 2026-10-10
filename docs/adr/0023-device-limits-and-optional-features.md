@@ -20,3 +20,15 @@
 - Low-tier hardware boots with exactly the device it did before.
 - Code that uses an optional feature must check `GpuFeatures` and keep its fallback tested.
 - Per-tier device limits (one device per tier) were considered and rejected: a tier is a settings choice that can change at runtime, while a device is created once.
+
+## Amendment 1: clustered lights (C5), 2026-10-10
+
+Clustered lighting needs no raised limit. Counted per entry point from the shaders (a unit test in `light_clusters.rs` keeps the count honest):
+
+| Stage | Storage buffers | Downlevel floor |
+|---|---|---|
+| Cluster cull (`cull_main`, compute) | 4: lights, cluster bounds, light lists, overflow counter | 4 |
+| Cluster bounds (`bounds_main`, compute) | 1: cluster bounds | 4 |
+| PBR forward (`fs_main`, fragment) | 2: lights, light lists | 4 |
+
+Image-based lighting binds textures and uniforms only, so IBL and clustered lights together stay at two storage buffers in the fragment stage, which settles the risk the M18 task list raised. The cull sits exactly at the floor, so a fifth buffer there (a light index pool shared across clusters, say) must either merge with an existing one or raise `max_storage_buffers_per_shader_stage` from the adapter under decision 3, with the fixed-cap lists kept as the fallback. The Low tier uses a smaller per-cluster cap (32 against High's 128), not a different path.

@@ -440,6 +440,85 @@ pub struct RenderFrame {
     pub sky: Option<Sky>,
     /// Exponential height fog over the scene. `None` draws none.
     pub fog: Option<HeightFog>,
+    /// Point and spot lights (C5), lighting PBR surfaces through the
+    /// clustered light lists. Flat materials ignore them, and so does a
+    /// frame without a perspective camera. Invalid lights (no range, no
+    /// intensity, a non-finite value, a spot with no direction) are skipped,
+    /// as is any beyond the 16384th.
+    pub lights: Vec<LocalLight>,
+    /// The most lights one cluster lists, 1 to 256. A cluster touched by
+    /// more drops the rest, counted in
+    /// [`FrameStats::light_overflow`](crate::FrameStats::light_overflow).
+    /// The tiers use 32 (Low) and [`DEFAULT_CLUSTER_LIGHT_CAP`](Self::DEFAULT_CLUSTER_LIGHT_CAP) (High).
+    pub cluster_light_cap: u32,
+    /// Screen-space ambient occlusion (C4), darkening ambient and image-based
+    /// light where nearby geometry hides the sky. `None` turns it off, and the
+    /// frame then pays nothing for it.
+    pub ambient_occlusion: Option<AmbientOcclusion>,
+}
+
+/// Ground-truth ambient occlusion (GTAO), traced at half resolution against
+/// the depth prepass and applied to ambient and indirect light only: direct
+/// light already has shadows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AmbientOcclusion {
+    /// How far, in metres, geometry can occlude a point. Occluders farther
+    /// than this are ignored, so an object far in front of a wall leaves no
+    /// halo on it.
+    pub radius: f32,
+    /// `0..1`: 0 leaves ambient light as it was, 1 applies the full occlusion.
+    pub strength: f32,
+}
+
+impl Default for AmbientOcclusion {
+    /// A metre of reach at full strength, for human-scale scenes.
+    fn default() -> Self {
+        Self {
+            radius: 1.0,
+            strength: 1.0,
+        }
+    }
+}
+
+/// A light at a point in the world: a lamp, a torch, a spell.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LocalLight {
+    /// World position, metres.
+    pub position: [f32; 3],
+    /// Beyond this distance, metres, the light contributes nothing; it
+    /// fades smoothly to zero there so its edge never shows.
+    pub range: f32,
+    /// Linear RGB.
+    pub color: [f32; 3],
+    /// In the key light's units: a surface 1 m away, facing the light, is lit
+    /// as a directional light of this intensity would light it.
+    pub intensity: f32,
+    /// `None` shines every way; `Some` narrows it to a cone.
+    pub spot: Option<SpotCone>,
+}
+
+/// A spot light's cone.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpotCone {
+    /// Unit direction the light points.
+    pub direction: [f32; 3],
+    /// Full intensity inside this half-angle, radians.
+    pub inner_angle: f32,
+    /// No light outside this half-angle, radians.
+    pub outer_angle: f32,
+}
+
+impl Default for LocalLight {
+    /// A warm 10 m lamp at the origin.
+    fn default() -> Self {
+        Self {
+            position: [0.0; 3],
+            range: 10.0,
+            color: [1.0, 0.85, 0.6],
+            intensity: 1.0,
+            spot: None,
+        }
+    }
 }
 
 /// Fog that thickens toward the ground, applied to every lit surface by the
@@ -522,8 +601,14 @@ impl RenderFrame {
             post: PostSettings::default(),
             sky: None,
             fog: None,
+            lights: Vec::new(),
+            cluster_light_cap: Self::DEFAULT_CLUSTER_LIGHT_CAP,
+            ambient_occlusion: None,
         }
     }
+
+    /// The High tier's per-cluster light cap.
+    pub const DEFAULT_CLUSTER_LIGHT_CAP: u32 = 128;
 
     pub fn push(&mut self, draw: DrawCommand) {
         self.draws.push(draw);
